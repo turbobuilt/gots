@@ -1,5 +1,6 @@
 #include "compiler.h"
 #include "runtime.h"
+#include <fstream>
 #include <iostream>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -115,9 +116,16 @@ void GoTSCompiler::compile(const std::string& source) {
         
         codegen->emit_prologue();
         
-        // Generate non-function statements
+        // Process imports first (they are hoisted like in JavaScript/TypeScript)
         for (const auto& node : ast) {
-            if (!dynamic_cast<FunctionDecl*>(node.get())) {
+            if (dynamic_cast<ImportStatement*>(node.get())) {
+                node->generate_code(*codegen, type_system);
+            }
+        }
+        
+        // Generate non-function, non-import statements
+        for (const auto& node : ast) {
+            if (!dynamic_cast<FunctionDecl*>(node.get()) && !dynamic_cast<ImportStatement*>(node.get())) {
                 node->generate_code(*codegen, type_system);
             }
         }
@@ -248,6 +256,131 @@ ClassInfo* GoTSCompiler::get_class(const std::string& class_name) {
 
 bool GoTSCompiler::is_class_defined(const std::string& class_name) {
     return classes.find(class_name) != classes.end();
+}
+
+// Module system methods
+std::string GoTSCompiler::resolve_module_path(const std::string& module_path, const std::string& current_file) {
+    // Handle relative and absolute paths
+    std::string resolved_path = module_path;
+    
+    // If it's a relative path and we have a current file, resolve relative to it
+    bool is_relative = (module_path.length() >= 2 && module_path.substr(0, 2) == "./") ||
+                      (module_path.length() >= 3 && module_path.substr(0, 3) == "../");
+    
+    if (!current_file.empty() && is_relative) {
+        // Extract directory from current file
+        size_t last_slash = current_file.find_last_of("/\\");
+        if (last_slash != std::string::npos) {
+            std::string current_dir = current_file.substr(0, last_slash + 1);
+            resolved_path = current_dir + module_path;
+        }
+    }
+    
+    // Try different extensions: .gts, .ts, .js (in order of preference)
+    std::vector<std::string> extensions = {".gts", ".ts", ".js"};
+    
+    // First try the path as-is (might already have extension)
+    std::ifstream file(resolved_path);
+    if (file.good()) {
+        file.close();
+        return resolved_path;
+    }
+    
+    // Try with different extensions
+    for (const auto& ext : extensions) {
+        std::string path_with_ext = resolved_path + ext;
+        std::ifstream test_file(path_with_ext);
+        if (test_file.good()) {
+            test_file.close();
+            return path_with_ext;
+        }
+    }
+    
+    // If no file found, return original path (will cause error later)
+    return resolved_path;
+}
+
+Module* GoTSCompiler::load_module(const std::string& module_path) {
+    // Check if module is already loaded
+    auto it = modules.find(module_path);
+    if (it != modules.end() && it->second.loaded) {
+        return &it->second;
+    }
+    
+    // Resolve the actual file path using current file context
+    std::string resolved_path = resolve_module_path(module_path, current_file_path);
+    
+    // Read the file
+    std::ifstream file(resolved_path);
+    if (!file.is_open()) {
+        throw std::runtime_error("Cannot open module file: " + resolved_path);
+    }
+    
+    std::string source((std::istreambuf_iterator<char>(file)),
+                       std::istreambuf_iterator<char>());
+    file.close();
+    
+    // Parse the module
+    Lexer lexer(source);
+    auto tokens = lexer.tokenize();
+    Parser parser(std::move(tokens));
+    auto ast = parser.parse();
+    
+    // Create module entry
+    Module& module = modules[module_path];
+    module.path = resolved_path;
+    module.ast = std::move(ast);
+    module.loaded = true;
+    
+    // Analyze exports in the module
+    bool has_named_exports = false;
+    for (const auto& stmt : module.ast) {
+        if (auto export_stmt = dynamic_cast<ExportStatement*>(stmt.get())) {
+            if (export_stmt->is_default) {
+                module.has_default_export = true;
+                module.default_export_name = "default";
+            } else {
+                has_named_exports = true;
+                // Add named exports to module
+                for (const auto& spec : export_stmt->specifiers) {
+                    // For now, just track that we have named exports
+                    // Full implementation would analyze the actual exported values
+                }
+            }
+        }
+    }
+    
+    // Create synthetic default export if no default but has named exports
+    if (!module.has_default_export && has_named_exports) {
+        create_synthetic_default_export(module);
+    }
+    
+    return &module;
+}
+
+void GoTSCompiler::create_synthetic_default_export(Module& module) {
+    // Create a synthetic default export that is an object containing all named exports
+    module.has_default_export = true;
+    module.default_export_name = "__synthetic_default";
+    
+    // The synthetic default will be created at runtime by collecting all named exports
+    // into a single object. This allows: import module from "./file" when file only
+    // has named exports like: export const foo = 1; export function bar() {}
+    // The result would be: module = { foo: 1, bar: [Function] }
+}
+
+void GoTSCompiler::compile_file(const std::string& file_path) {
+    // Read and compile a file directly
+    std::ifstream file(file_path);
+    if (!file.is_open()) {
+        throw std::runtime_error("Cannot open file: " + file_path);
+    }
+    
+    std::string source((std::istreambuf_iterator<char>(file)),
+                       std::istreambuf_iterator<char>());
+    file.close();
+    
+    compile(source);
 }
 
 }

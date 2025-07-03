@@ -12,6 +12,8 @@ enum class TokenType {
     IDENTIFIER, NUMBER, STRING, BOOLEAN,
     FUNCTION, GO, AWAIT, LET, VAR, CONST,
     IF, FOR, WHILE, RETURN,
+    SWITCH, CASE, DEFAULT, BREAK,
+    IMPORT, EXPORT, FROM, AS, DEFAULT_EXPORT,
     TENSOR, NEW,
     CLASS, EXTENDS, SUPER, THIS, CONSTRUCTOR,
     PUBLIC, PRIVATE, PROTECTED, STATIC,
@@ -98,6 +100,7 @@ public:
     virtual void emit_sub_reg_reg(int dst, int src) = 0;
     virtual void emit_mul_reg_reg(int dst, int src) = 0;
     virtual void emit_div_reg_reg(int dst, int src) = 0;
+    virtual void emit_mod_reg_reg(int dst, int src) = 0;
     virtual void emit_call(const std::string& label) = 0;
     virtual void emit_ret() = 0;
     virtual void emit_function_return() = 0;
@@ -147,6 +150,7 @@ public:
     void emit_sub_reg_reg(int dst, int src) override;
     void emit_mul_reg_reg(int dst, int src) override;
     void emit_div_reg_reg(int dst, int src) override;
+    void emit_mod_reg_reg(int dst, int src) override;
     void emit_call(const std::string& label) override;
     void emit_ret() override;
     void emit_function_return() override;
@@ -211,6 +215,7 @@ public:
     void emit_sub_reg_reg(int dst, int src) override;
     void emit_mul_reg_reg(int dst, int src) override;
     void emit_div_reg_reg(int dst, int src) override;
+    void emit_mod_reg_reg(int dst, int src) override;
     void emit_call(const std::string& label) override;
     void emit_ret() override;
     void emit_function_return() override;
@@ -400,6 +405,68 @@ struct ReturnStatement : ASTNode {
     void generate_code(CodeGenerator& gen, TypeInference& types) override;
 };
 
+struct BreakStatement : ASTNode {
+    BreakStatement() {}
+    void generate_code(CodeGenerator& gen, TypeInference& types) override;
+};
+
+struct CaseClause : ASTNode {
+    std::unique_ptr<ExpressionNode> value;  // nullptr for default case
+    std::vector<std::unique_ptr<ASTNode>> body;
+    bool is_default = false;
+    
+    CaseClause(std::unique_ptr<ExpressionNode> val) : value(std::move(val)) {}
+    CaseClause() : is_default(true) {}  // Default constructor for default case
+    void generate_code(CodeGenerator& gen, TypeInference& types) override;
+};
+
+struct SwitchStatement : ASTNode {
+    std::unique_ptr<ExpressionNode> discriminant;
+    std::vector<std::unique_ptr<CaseClause>> cases;
+    
+    SwitchStatement(std::unique_ptr<ExpressionNode> disc) : discriminant(std::move(disc)) {}
+    void generate_code(CodeGenerator& gen, TypeInference& types) override;
+};
+
+// Import/Export AST Nodes
+struct ImportSpecifier {
+    std::string imported_name;  // Name in source module
+    std::string local_name;     // Name in current module (for "as" renaming)
+    bool is_default = false;
+    
+    ImportSpecifier(const std::string& name) : imported_name(name), local_name(name) {}
+    ImportSpecifier(const std::string& imported, const std::string& local) 
+        : imported_name(imported), local_name(local) {}
+};
+
+struct ImportStatement : ASTNode {
+    std::vector<ImportSpecifier> specifiers;
+    std::string module_path;
+    bool is_namespace_import = false;  // import * as name from "module"
+    std::string namespace_name;        // For namespace imports
+    
+    ImportStatement(const std::string& path) : module_path(path) {}
+    void generate_code(CodeGenerator& gen, TypeInference& types) override;
+};
+
+struct ExportSpecifier {
+    std::string local_name;     // Name in current module
+    std::string exported_name;  // Name in export (for "as" renaming)
+    
+    ExportSpecifier(const std::string& name) : local_name(name), exported_name(name) {}
+    ExportSpecifier(const std::string& local, const std::string& exported)
+        : local_name(local), exported_name(exported) {}
+};
+
+struct ExportStatement : ASTNode {
+    std::vector<ExportSpecifier> specifiers;
+    std::unique_ptr<ASTNode> declaration;  // For export declarations
+    bool is_default = false;
+    
+    ExportStatement() {}
+    void generate_code(CodeGenerator& gen, TypeInference& types) override;
+};
+
 struct PropertyAccess : ExpressionNode {
     std::string object_name;
     std::string property_name;
@@ -515,11 +582,16 @@ private:
     std::unique_ptr<ExpressionNode> parse_call();
     
     std::unique_ptr<ASTNode> parse_statement();
+    std::unique_ptr<ASTNode> parse_import_statement();
+    std::unique_ptr<ASTNode> parse_export_statement();
     std::unique_ptr<ASTNode> parse_function_declaration();
     std::unique_ptr<ASTNode> parse_variable_declaration();
     std::unique_ptr<ASTNode> parse_if_statement();
     std::unique_ptr<ASTNode> parse_for_statement();
+    std::unique_ptr<ASTNode> parse_switch_statement();
+    std::unique_ptr<CaseClause> parse_case_clause();
     std::unique_ptr<ASTNode> parse_return_statement();
+    std::unique_ptr<ASTNode> parse_break_statement();
     std::unique_ptr<ASTNode> parse_expression_statement();
     std::unique_ptr<ASTNode> parse_class_declaration();
     std::unique_ptr<MethodDecl> parse_method_declaration();
@@ -532,6 +604,17 @@ public:
     std::vector<std::unique_ptr<ASTNode>> parse();
 };
 
+// Module system structures
+struct Module {
+    std::string path;
+    std::unordered_map<std::string, Variable> exports;
+    std::unordered_map<std::string, Function> exported_functions;
+    bool has_default_export = false;
+    std::string default_export_name;
+    bool loaded = false;
+    std::vector<std::unique_ptr<ASTNode>> ast;
+};
+
 class GoTSCompiler {
 private:
     std::unique_ptr<CodeGenerator> codegen;
@@ -539,14 +622,24 @@ private:
     std::unordered_map<std::string, Function> functions;
     std::unordered_map<std::string, Variable> global_variables;
     std::unordered_map<std::string, ClassInfo> classes;  // Class registry
+    std::unordered_map<std::string, Module> modules;     // Module cache
     Backend target_backend;
+    std::string current_file_path;  // Track current file being compiled
     
 public:
     GoTSCompiler(Backend backend = Backend::X86_64);
     void compile(const std::string& source);
+    void compile_file(const std::string& file_path);
     std::vector<uint8_t> get_machine_code();
     void execute();
     void set_backend(Backend backend);
+    
+    // Module system
+    std::string resolve_module_path(const std::string& module_path, const std::string& current_file = "");
+    Module* load_module(const std::string& module_path);
+    void create_synthetic_default_export(Module& module);
+    void set_current_file(const std::string& file_path) { current_file_path = file_path; }
+    const std::string& get_current_file() const { return current_file_path; }
     
     // Class management
     void register_class(const ClassInfo& class_info);

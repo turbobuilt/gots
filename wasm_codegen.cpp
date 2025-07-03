@@ -47,6 +47,8 @@ enum WasmOpcode {
     WASM_I64_MUL = 0x7E,
     WASM_I64_DIV_S = 0x7F,
     WASM_I64_DIV_U = 0x80,
+    WASM_I64_REM_S = 0x81,
+    WASM_I64_REM_U = 0x82,
     WASM_I64_XOR = 0x85,
     WASM_F32_ADD = 0x92,
     WASM_F32_SUB = 0x93,
@@ -174,6 +176,16 @@ void WasmCodeGen::emit_div_reg_reg(int dst, int src) {
     emit_opcode(WASM_LOCAL_GET);
     emit_leb128(src);
     emit_opcode(WASM_I64_DIV_S);
+    emit_opcode(WASM_LOCAL_SET);
+    emit_leb128(dst);
+}
+
+void WasmCodeGen::emit_mod_reg_reg(int dst, int src) {
+    emit_opcode(WASM_LOCAL_GET);
+    emit_leb128(dst);
+    emit_opcode(WASM_LOCAL_GET);
+    emit_leb128(src);
+    emit_opcode(WASM_I64_REM_S);  // Remainder (modulo) operation
     emit_opcode(WASM_LOCAL_SET);
     emit_leb128(dst);
 }

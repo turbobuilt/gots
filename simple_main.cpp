@@ -29,8 +29,11 @@ int main(int argc, char* argv[]) {
         // Read the GoTS file
         std::string program = read_file(filename);
         
+        // std::cout << "DEBUG: File content (" << program.length() << " bytes):" << std::endl;
+        
         // Compile and execute the program
         GoTSCompiler compiler(Backend::X86_64);
+        compiler.set_current_file(filename);
         compiler.compile(program);
         compiler.execute();
         

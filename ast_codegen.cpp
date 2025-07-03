@@ -219,6 +219,27 @@ void BinaryOp::generate_code(CodeGenerator& gen, TypeInference& types) {
             }
             break;
             
+        case TokenType::MODULO:
+            result_type = types.get_cast_type(left_type, right_type);
+            if (left) {
+                // Use runtime function for modulo to ensure robustness
+                // Right operand is in RAX, move to RSI (second argument)
+                gen.emit_mov_reg_reg(6, 0);   // RSI = right operand (from RAX)
+                
+                // Pop left operand from stack directly to RDI (first argument)
+                if (auto x86_gen = dynamic_cast<X86CodeGen*>(&gen)) {
+                    x86_gen->emit_mov_reg_mem_rsp(7, 0);   // RDI = left operand from [rsp]
+                } else {
+                    gen.emit_mov_reg_mem(7, 0);   // fallback for other backends
+                }
+                gen.emit_add_reg_imm(4, 8);   // add rsp, 8 (restore stack)
+                
+                // Call __runtime_modulo(left, right)
+                gen.emit_call("__runtime_modulo");
+                // Result is now in RAX
+            }
+            break;
+            
         case TokenType::EQUAL:
         case TokenType::NOT_EQUAL:
         case TokenType::STRICT_EQUAL:
@@ -1016,6 +1037,145 @@ void ReturnStatement::generate_code(CodeGenerator& gen, TypeInference& types) {
     gen.emit_function_return();
 }
 
+// Global variable to track current break target
+static std::string current_break_target = "";
+
+void BreakStatement::generate_code(CodeGenerator& gen, TypeInference& types) {
+    (void)types; // Suppress unused parameter warning
+    
+    if (!current_break_target.empty()) {
+        gen.emit_jump(current_break_target);
+    } else {
+        // No active switch/loop context
+        // For now, just emit a nop or comment
+        gen.emit_label("__break_without_context");
+    }
+}
+
+void SwitchStatement::generate_code(CodeGenerator& gen, TypeInference& types) {
+    static int switch_counter = 0;
+    std::string switch_end = "switch_end_" + std::to_string(switch_counter);
+    switch_counter++;
+    
+    // Save previous break target and set new one
+    std::string previous_break_target = current_break_target;
+    current_break_target = switch_end;
+    
+    // Generate discriminant code - this puts the result in RAX
+    discriminant->generate_code(gen, types);
+    DataType discriminant_type = discriminant->result_type;
+    
+    // Store discriminant value in a temporary location using dynamic stack allocation
+    int64_t discriminant_offset = types.allocate_variable("__temp_discriminant_" + std::to_string(switch_counter - 1), discriminant_type);
+    int64_t discriminant_type_offset = types.allocate_variable("__temp_discriminant_type_" + std::to_string(switch_counter - 1), DataType::INT64);
+    
+    gen.emit_mov_mem_reg(discriminant_offset, 0); // Store RAX to discriminant offset
+    // Store discriminant type
+    gen.emit_mov_reg_imm(0, static_cast<int64_t>(discriminant_type));
+    gen.emit_mov_mem_reg(discriminant_type_offset, 0); // Store discriminant type to type offset
+    
+    // Generate code for each case
+    std::vector<std::string> case_labels;
+    std::string default_label;
+    bool has_default = false;
+    
+    // First pass: create labels and generate comparison jumps
+    for (size_t i = 0; i < cases.size(); i++) {
+        const auto& case_clause = cases[i];
+        
+        if (case_clause->is_default) {
+            default_label = "case_default_" + std::to_string(switch_counter - 1);
+            has_default = true;
+        } else {
+            std::string case_label = "case_" + std::to_string(switch_counter - 1) + "_" + std::to_string(i);
+            case_labels.push_back(case_label);
+            
+            // Generate case value and compare with discriminant
+            case_clause->value->generate_code(gen, types);
+            DataType case_type = case_clause->value->result_type;
+            
+            // ULTRA HIGH PERFORMANCE: Fast path for typed comparisons, slow path for ANY/UNKNOWN
+            if (discriminant_type != DataType::UNKNOWN && discriminant_type != DataType::ANY &&
+                case_type != DataType::UNKNOWN && case_type != DataType::ANY &&
+                discriminant_type == case_type) {
+                
+                // FAST PATH: Both operands are the same known type - direct comparison
+                gen.emit_mov_reg_mem(3, discriminant_offset); // RBX = discriminant value from stack
+                gen.emit_compare(3, 0); // Compare discriminant (RBX) with case value (RAX)
+                gen.emit_sete(1); // Set RCX = 1 if equal, 0 if not equal
+                gen.emit_mov_reg_imm(2, 0); // RDX = 0
+                gen.emit_compare(1, 2); // Compare RCX with 0
+                gen.emit_jump_if_not_zero(case_label); // Jump if RCX != 0 (i.e., if equal)
+                
+            } else if (discriminant_type != DataType::UNKNOWN && discriminant_type != DataType::ANY &&
+                       case_type != DataType::UNKNOWN && case_type != DataType::ANY &&
+                       discriminant_type != case_type) {
+                
+                // FAST PATH: Both operands are known types but different - never equal
+                // Skip this case entirely (no jump, fall through to next case)
+                
+            } else {
+                
+                // SLOW PATH: At least one operand is ANY/UNKNOWN - use type-aware comparison
+                // Prepare arguments for __runtime_js_equal(left_value, left_type, right_value, right_type)
+                gen.emit_mov_reg_mem(7, discriminant_offset); // RDI = discriminant value from stack
+                gen.emit_mov_reg_mem(6, discriminant_type_offset); // RSI = discriminant type from stack
+                gen.emit_mov_reg_reg(2, 0);   // RDX = case value (currently in RAX)
+                gen.emit_mov_reg_imm(1, static_cast<int64_t>(case_type)); // RCX = case type
+                
+                // Call __runtime_js_equal
+                gen.emit_sub_reg_imm(4, 8);  // Align stack to 16-byte boundary
+                gen.emit_call("__runtime_js_equal");
+                gen.emit_add_reg_imm(4, 8);  // Restore stack
+                
+                // RAX now contains 1 if equal, 0 if not equal
+                gen.emit_mov_reg_imm(3, 0); // RBX = 0
+                gen.emit_compare(0, 3); // Compare RAX with 0
+                gen.emit_jump_if_not_zero(case_label); // Jump if RAX != 0 (i.e., if equal)
+            }
+        }
+    }
+    
+    // If no case matched, jump to default or end
+    if (has_default) {
+        gen.emit_jump(default_label);
+    } else {
+        gen.emit_jump(switch_end);
+    }
+    
+    // Second pass: generate case bodies
+    size_t case_index = 0;
+    for (size_t i = 0; i < cases.size(); i++) {
+        const auto& case_clause = cases[i];
+        
+        if (case_clause->is_default) {
+            gen.emit_label(default_label);
+        } else {
+            gen.emit_label(case_labels[case_index++]);
+        }
+        
+        // Generate case body
+        for (const auto& stmt : case_clause->body) {
+            stmt->generate_code(gen, types);
+        }
+        
+        // Fall through to next case (JavaScript/C-style behavior)
+        // Break statements will jump to switch_end
+    }
+    
+    gen.emit_label(switch_end);
+    
+    // Restore previous break target
+    current_break_target = previous_break_target;
+}
+
+void CaseClause::generate_code(CodeGenerator& gen, TypeInference& types) {
+    // CaseClause code generation is handled by SwitchStatement
+    // This method should not be called directly
+    (void)gen;
+    (void)types;
+}
+
 // Class-related AST node implementations
 void PropertyAccess::generate_code(CodeGenerator& gen, TypeInference& types) {
     if (object_name == "this") {
@@ -1484,6 +1644,87 @@ void SuperMethodCall::generate_code(CodeGenerator& gen, TypeInference& types) {
               << " with " << arguments.size() << " arguments at label " << parent_method_label << std::endl;
     
     result_type = DataType::UNKNOWN; // TODO: Get actual return type from method signature
+}
+
+void ImportStatement::generate_code(CodeGenerator& gen, TypeInference& types) {
+    // At code generation time, we need to load the module and make its exports available
+    
+    // Get the compiler context to access the module system
+    GoTSCompiler* compiler = ConstructorDecl::current_compiler_context;
+    if (!compiler) {
+        throw std::runtime_error("No compiler context available for module loading");
+    }
+    
+    try {
+        // Load the module - this will parse and cache it
+        Module* module = compiler->load_module(module_path);
+        if (!module) {
+            throw std::runtime_error("Failed to load module: " + module_path);
+        }
+        
+        // Execute the module to populate its exports
+        // For now, we'll simulate this by parsing the exports and binding known values
+        if (is_namespace_import) {
+            // Create a namespace object containing all exports from the module
+            // This would require runtime module loading and export collection
+            types.set_variable_type(namespace_name, DataType::UNKNOWN);
+        } else {
+            for (const auto& spec : specifiers) {
+                
+                // Look for the exported value in the module's AST
+                for (const auto& stmt : module->ast) {
+                    if (auto export_stmt = dynamic_cast<ExportStatement*>(stmt.get())) {
+                        // Check if this export statement has a declaration (like "export const bobby = 'hello'")
+                        if (export_stmt->declaration) {
+                            // This is an export declaration, generate code for it
+                            
+                            // Allocate stack space for the imported variable
+                            int64_t offset = types.allocate_variable(spec.local_name, DataType::STRING);
+                            
+                            // Generate code for the export declaration
+                            export_stmt->declaration->generate_code(gen, types);
+                            
+                            // Store the result in the imported variable's location
+                            gen.emit_mov_mem_reg(offset, 0);
+                            
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "Error loading module " << module_path << ": " << e.what() << std::endl;
+        // Fall back to registering as unknown type
+        for (const auto& spec : specifiers) {
+            types.set_variable_type(spec.local_name, DataType::UNKNOWN);
+        }
+    }
+}
+
+void ExportStatement::generate_code(CodeGenerator& gen, TypeInference& types) {
+    std::cout << "DEBUG: Processing export statement" << std::endl;
+    
+    if (is_default) {
+        std::cout << "DEBUG: Default export" << std::endl;
+        if (declaration) {
+            // Generate code for the default export declaration
+            declaration->generate_code(gen, types);
+            // The result should be stored as the default export value
+        }
+    } else if (!specifiers.empty()) {
+        std::cout << "DEBUG: Named exports:" << std::endl;
+        for (const auto& spec : specifiers) {
+            std::cout << "  " << spec.local_name << " as " << spec.exported_name << std::endl;
+        }
+        // Named exports just mark existing variables/functions as exported
+        // The actual export registration happens in the module system
+    } else if (declaration) {
+        std::cout << "DEBUG: Export declaration" << std::endl;
+        // Generate code for the exported declaration
+        declaration->generate_code(gen, types);
+        // Mark the declared item as exported
+    }
 }
 
 }

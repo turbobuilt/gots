@@ -483,6 +483,14 @@ std::unique_ptr<ExpressionNode> Parser::parse_primary() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_statement() {
+    if (check(TokenType::IMPORT)) {
+        return parse_import_statement();
+    }
+    
+    if (check(TokenType::EXPORT)) {
+        return parse_export_statement();
+    }
+    
     if (check(TokenType::FUNCTION)) {
         return parse_function_declaration();
     }
@@ -503,8 +511,16 @@ std::unique_ptr<ASTNode> Parser::parse_statement() {
         return parse_for_statement();
     }
     
+    if (check(TokenType::SWITCH)) {
+        return parse_switch_statement();
+    }
+    
     if (check(TokenType::RETURN)) {
         return parse_return_statement();
+    }
+    
+    if (check(TokenType::BREAK)) {
+        return parse_break_statement();
     }
     
     return parse_expression_statement();
@@ -747,6 +763,86 @@ std::unique_ptr<ASTNode> Parser::parse_return_statement() {
     }
     
     return std::make_unique<ReturnStatement>(std::move(value));
+}
+
+std::unique_ptr<ASTNode> Parser::parse_break_statement() {
+    if (!match(TokenType::BREAK)) {
+        throw std::runtime_error("Expected 'break'");
+    }
+    
+    if (match(TokenType::SEMICOLON)) {
+        // Optional semicolon
+    }
+    
+    return std::make_unique<BreakStatement>();
+}
+
+std::unique_ptr<ASTNode> Parser::parse_switch_statement() {
+    if (!match(TokenType::SWITCH)) {
+        throw std::runtime_error("Expected 'switch'");
+    }
+    
+    // Parse discriminant (the expression to switch on)
+    bool has_parens = false;
+    if (check(TokenType::LPAREN)) {
+        has_parens = true;
+        advance();
+    }
+    
+    auto discriminant = parse_expression();
+    
+    if (has_parens && !match(TokenType::RPAREN)) {
+        throw std::runtime_error("Expected ')' after switch expression");
+    }
+    
+    auto switch_stmt = std::make_unique<SwitchStatement>(std::move(discriminant));
+    
+    // Parse switch body
+    if (!match(TokenType::LBRACE)) {
+        throw std::runtime_error("Expected '{' after switch expression");
+    }
+    
+    // Parse case clauses
+    while (!check(TokenType::RBRACE) && !check(TokenType::EOF_TOKEN)) {
+        switch_stmt->cases.push_back(parse_case_clause());
+    }
+    
+    if (!match(TokenType::RBRACE)) {
+        throw std::runtime_error("Expected '}' after switch body");
+    }
+    
+    return switch_stmt;
+}
+
+std::unique_ptr<CaseClause> Parser::parse_case_clause() {
+    std::unique_ptr<CaseClause> case_clause;
+    
+    if (match(TokenType::CASE)) {
+        // Parse case value
+        auto value = parse_expression();
+        case_clause = std::make_unique<CaseClause>(std::move(value));
+        
+        if (!match(TokenType::COLON)) {
+            throw std::runtime_error("Expected ':' after case value");
+        }
+    } else if (match(TokenType::DEFAULT)) {
+        // Parse default case
+        case_clause = std::make_unique<CaseClause>();  // Default constructor
+        
+        if (!match(TokenType::COLON)) {
+            throw std::runtime_error("Expected ':' after 'default'");
+        }
+    } else {
+        throw std::runtime_error("Expected 'case' or 'default' in switch statement");
+    }
+    
+    // Parse case body (statements until next case/default/end of switch)
+    while (!check(TokenType::CASE) && !check(TokenType::DEFAULT) && 
+           !check(TokenType::RBRACE) && !check(TokenType::EOF_TOKEN)) {
+        case_clause->body.push_back(parse_statement());
+    }
+    
+    return case_clause;
 }
 
 std::unique_ptr<ASTNode> Parser::parse_expression_statement() {
@@ -1001,6 +1097,183 @@ std::unique_ptr<ConstructorDecl> Parser::parse_constructor_declaration(const std
     }
     
     return constructor;
+}
+
+std::unique_ptr<ASTNode> Parser::parse_import_statement() {
+    if (!match(TokenType::IMPORT)) {
+        throw std::runtime_error("Expected 'import'");
+    }
+    
+    auto import_stmt = std::make_unique<ImportStatement>("");
+    
+    // Handle different import patterns:
+    // import defaultExport from "module"
+    // import { named1, named2 } from "module" 
+    // import { named as alias } from "module"
+    // import * as namespace from "module"
+    // import "module" (side-effect only)
+    
+    if (check(TokenType::MULTIPLY)) {
+        // import * as namespace from "module"
+        advance(); // consume *
+        
+        if (!match(TokenType::AS)) {
+            throw std::runtime_error("Expected 'as' after '* in import");
+        }
+        
+        if (!check(TokenType::IDENTIFIER)) {
+            throw std::runtime_error("Expected identifier after 'as'");
+        }
+        
+        import_stmt->is_namespace_import = true;
+        import_stmt->namespace_name = current_token().value;
+        advance();
+        
+    } else if (check(TokenType::LBRACE)) {
+        // import { named1, named2, ... } from "module"
+        advance(); // consume {
+        
+        while (!check(TokenType::RBRACE) && !check(TokenType::EOF_TOKEN)) {
+            if (!check(TokenType::IDENTIFIER)) {
+                throw std::runtime_error("Expected identifier in import specifier");
+            }
+            
+            std::string imported_name = current_token().value;
+            advance();
+            
+            std::string local_name = imported_name;
+            if (match(TokenType::AS)) {
+                if (!check(TokenType::IDENTIFIER)) {
+                    throw std::runtime_error("Expected identifier after 'as'");
+                }
+                local_name = current_token().value;
+                advance();
+            }
+            
+            import_stmt->specifiers.emplace_back(imported_name, local_name);
+            
+            if (!check(TokenType::RBRACE)) {
+                if (!match(TokenType::COMMA)) {
+                    throw std::runtime_error("Expected ',' or '}' in import specifiers");
+                }
+            }
+        }
+        
+        if (!match(TokenType::RBRACE)) {
+            throw std::runtime_error("Expected '}' after import specifiers");
+        }
+        
+    } else if (check(TokenType::IDENTIFIER)) {
+        // import defaultExport from "module" or import identifier from "module"
+        std::string name = current_token().value;
+        advance();
+        
+        ImportSpecifier spec(name);
+        spec.is_default = true;
+        import_stmt->specifiers.push_back(spec);
+    }
+    
+    // Parse "from" clause (optional for side-effect imports)
+    if (match(TokenType::FROM)) {
+        if (!check(TokenType::STRING)) {
+            throw std::runtime_error("Expected string literal after 'from'");
+        }
+        
+        import_stmt->module_path = current_token().value;
+        // Remove quotes from string literal (handle both single and double quotes)
+        if (import_stmt->module_path.length() >= 2) {
+            char first_char = import_stmt->module_path[0];
+            char last_char = import_stmt->module_path[import_stmt->module_path.length() - 1];
+            if ((first_char == '"' && last_char == '"') || (first_char == '\'' && last_char == '\'')) {
+                import_stmt->module_path = import_stmt->module_path.substr(1, import_stmt->module_path.length() - 2);
+            }
+        }
+        advance();
+    } else if (check(TokenType::STRING)) {
+        // Side-effect import: import "module"
+        import_stmt->module_path = current_token().value;
+        // Remove quotes from string literal (handle both single and double quotes)
+        if (import_stmt->module_path.length() >= 2) {
+            char first_char = import_stmt->module_path[0];
+            char last_char = import_stmt->module_path[import_stmt->module_path.length() - 1];
+            if ((first_char == '"' && last_char == '"') || (first_char == '\'' && last_char == '\'')) {
+                import_stmt->module_path = import_stmt->module_path.substr(1, import_stmt->module_path.length() - 2);
+            }
+        }
+        advance();
+    } else {
+        throw std::runtime_error("Expected 'from' clause or string literal in import");
+    }
+    
+    match(TokenType::SEMICOLON); // Optional semicolon
+    
+    return std::move(import_stmt);
+}
+
+std::unique_ptr<ASTNode> Parser::parse_export_statement() {
+    if (!match(TokenType::EXPORT)) {
+        throw std::runtime_error("Expected 'export'");
+    }
+    
+    auto export_stmt = std::make_unique<ExportStatement>();
+    
+    // Handle different export patterns:
+    // export default expression
+    // export { name1, name2 }
+    // export { name as alias }
+    // export function name() {}
+    // export var/let/const name = value
+    
+    if (current_token().type == TokenType::IDENTIFIER && current_token().value == "default") {
+        // export default ...
+        advance(); // consume "default"
+        export_stmt->is_default = true;
+        
+        // The rest is an expression or declaration
+        export_stmt->declaration = parse_statement();
+        
+    } else if (check(TokenType::LBRACE)) {
+        // export { name1, name2, ... }
+        advance(); // consume {
+        
+        while (!check(TokenType::RBRACE) && !check(TokenType::EOF_TOKEN)) {
+            if (!check(TokenType::IDENTIFIER)) {
+                throw std::runtime_error("Expected identifier in export specifier");
+            }
+            
+            std::string local_name = current_token().value;
+            advance();
+            
+            std::string exported_name = local_name;
+            if (match(TokenType::AS)) {
+                if (!check(TokenType::IDENTIFIER)) {
+                    throw std::runtime_error("Expected identifier after 'as'");
+                }
+                exported_name = current_token().value;
+                advance();
+            }
+            
+            export_stmt->specifiers.emplace_back(local_name, exported_name);
+            
+            if (!check(TokenType::RBRACE)) {
+                if (!match(TokenType::COMMA)) {
+                    throw std::runtime_error("Expected ',' or '}' in export specifiers");
+                }
+            }
+        }
+        
+        if (!match(TokenType::RBRACE)) {
+            throw std::runtime_error("Expected '}' after export specifiers");
+        }
+        
+    } else {
+        // export declaration (function, var, class, etc.)
+        export_stmt->declaration = parse_statement();
+    }
+    
+    match(TokenType::SEMICOLON); // Optional semicolon
+    
+    return std::move(export_stmt);
 }
 
 std::vector<std::unique_ptr<ASTNode>> Parser::parse() {

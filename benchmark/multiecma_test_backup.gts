@@ -47,7 +47,3 @@ switch (y) {
         console.log("is 3");
         break;
 }
-
-import { bobby } from "./testb.gts";
-
-console.log("bobby is ", bobby)

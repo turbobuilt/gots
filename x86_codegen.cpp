@@ -202,13 +202,24 @@ void X86CodeGen::emit_mul_reg_reg(int dst, int src) {
 }
 
 void X86CodeGen::emit_div_reg_reg(int dst, int src) {
-    emit_mov_reg_reg(RAX, dst);
-    code.push_back(0x48);
-    code.push_back(0x99);
-    code.push_back(0x48 | ((src >> 3) & 1));
-    code.push_back(0xF7);
-    code.push_back(0xF8 | (src & 7));
-    emit_mov_reg_reg(dst, RAX);
+    emit_mov_reg_reg(RAX, dst);  // Move dividend to RAX
+    code.push_back(0x48);        // REX prefix for 64-bit
+    code.push_back(0x99);        // CQO - sign extend RAX into RDX:RAX
+    code.push_back(0x48 | ((src >> 3) & 1)); // REX prefix
+    code.push_back(0xF7);        // IDIV opcode prefix
+    code.push_back(0xF8 | (src & 7)); // IDIV register (signed division, /7)
+    emit_mov_reg_reg(dst, RAX);  // Move quotient (RAX) to destination
+}
+
+void X86CodeGen::emit_mod_reg_reg(int dst, int src) {
+    // For modulo operation, we use the same DIV instruction but return RDX (remainder)
+    emit_mov_reg_reg(RAX, dst);  // Move dividend to RAX
+    code.push_back(0x48);        // REX prefix for 64-bit
+    code.push_back(0x99);        // CQO - sign extend RAX into RDX:RAX
+    code.push_back(0x48 | ((src >> 3) & 1)); // REX prefix
+    code.push_back(0xF7);        // DIV opcode prefix
+    code.push_back(0xF8 | (src & 7)); // DIV register
+    emit_mov_reg_reg(dst, RDX);  // Move remainder (RDX) to destination
 }
 
 void X86CodeGen::emit_call(const std::string& label) {

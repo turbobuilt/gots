@@ -964,6 +964,18 @@ void __super_constructor_call(int64_t object_id, int64_t arg1, int64_t arg2, int
     // This is a placeholder - actual implementation would resolve and call parent constructor
 }
 
+extern "C" int64_t __runtime_modulo(int64_t left, int64_t right) {
+    // Safe modulo operation with proper error handling and debug output
+    std::cerr << "DEBUG: __runtime_modulo called with left=" << left << ", right=" << right << std::endl;
+    if (right == 0) {
+        std::cerr << "Error: Division by zero in modulo operation" << std::endl;
+        return 0; // Return 0 instead of crashing
+    }
+    int64_t result = left % right;
+    std::cerr << "DEBUG: __runtime_modulo result=" << result << std::endl;
+    return result;
+}
+
 extern "C" int64_t __runtime_pow(int64_t base, int64_t exponent) {
     // Simple integer exponentiation for positive exponents
     // For negative exponents, return 0 (integer division)
