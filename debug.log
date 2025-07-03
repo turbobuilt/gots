@@ -1,0 +1,30 @@
+Starting program: /home/me/gots/gots debug_goroutine.gts
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib/x86_64-linux-gnu/libthread_db.so.1".
+[New Thread 0x7ffff77ff6c0 (LWP 342739)]
+[New Thread 0x7ffff6ffe6c0 (LWP 342740)]
+[New Thread 0x7ffff67fd6c0 (LWP 342741)]
+[New Thread 0x7ffff5ffc6c0 (LWP 342742)]
+[New Thread 0x7ffff57fb6c0 (LWP 342743)]
+[New Thread 0x7ffff4ffa6c0 (LWP 342744)]
+[New Thread 0x7ffff47f96c0 (LWP 342745)]
+[New Thread 0x7ffff3ff86c0 (LWP 342746)]
+[New Thread 0x7ffff37f76c0 (LWP 342747)]
+[New Thread 0x7ffff2ff66c0 (LWP 342748)]
+[New Thread 0x7ffff27f56c0 (LWP 342749)]
+[New Thread 0x7ffff1ff46c0 (LWP 342750)]
+
+Thread 1 "gots" received signal SIGSEGV, Segmentation fault.
+0x00005555555b4785 in __goroutine_spawn_with_arg1 ()
+#0  0x00005555555b4785 in __goroutine_spawn_with_arg1 ()
+#1  0x00007ffff7fbc1fb in ?? ()
+#2  0x00007fffffffd6c0 in ?? ()
+#3  0x0000000000000005 in ?? ()
+#4  0x00007ffff7893975 in _IO_new_file_write (f=0x5555555d8500 <std::cout@GLIBCXX_3.4>, data=0x7ffff7e7ba20, n=93824992773376) at ./libio/fileops.c:1181
+#5  0x0000555555564d2f in gots::GoTSCompiler::execute() ()
+#6  0x000055555556453b in main ()
+A debugging session is active.
+
+	Inferior 1 [process 342736] will be killed.
+
+Quit anyway? (y or n) [answered Y; input not from terminal]
