@@ -328,15 +328,18 @@ private:
 public:
     // Get or create an interned string
     GoTSString* intern(const char* str) {
+        if (!str) return nullptr;
+        
         std::lock_guard<std::mutex> lock(pool_mutex);
         
-        auto it = interned_strings.find(str);
+        std::string key(str);  // Create proper string key
+        auto it = interned_strings.find(key);
         if (it != interned_strings.end()) {
             return it->second;
         }
         
         GoTSString* new_string = new GoTSString(str);
-        interned_strings[str] = new_string;
+        interned_strings[key] = new_string;  // Use string key, not char* key
         return new_string;
     }
     

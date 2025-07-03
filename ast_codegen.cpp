@@ -19,25 +19,36 @@ void StringLiteral::generate_code(CodeGenerator& gen, TypeInference&) {
     // High-performance string creation using interned strings for literals
     // This provides both memory efficiency and extremely fast string creation
     
-    // Use string interning for all string literals - massive performance boost
-    // Robust string literal handling with optimization and safety
-    
     if (value.empty()) {
         // Handle empty string efficiently - call __string_create_empty()
         gen.emit_call("__string_create_empty");
     } else {
-        // Store the C string literal address - ensure it's valid
-        uint64_t str_literal_addr = reinterpret_cast<uint64_t>(value.c_str());
-        if (str_literal_addr == 0) {
-            // Fallback to empty string if null pointer
-            gen.emit_call("__string_create_empty");
+        // SAFE APPROACH: Use string interning with proper fixed StringPool
+        // The StringPool now uses std::string keys instead of char* keys,
+        // which makes it safe to use with temporary string data
+        
+        // Store the string content safely for the call
+        // We need to ensure the string data is available during the __string_intern call
+        static std::unordered_map<std::string, const char*> literal_storage;
+        
+        // Check if we already have this literal stored
+        auto it = literal_storage.find(value);
+        const char* str_ptr;
+        if (it != literal_storage.end()) {
+            str_ptr = it->second;
         } else {
-            gen.emit_mov_reg_imm(7, static_cast<int64_t>(str_literal_addr)); // RDI = first argument
-            
-            // Call __string_intern for string literals to optimize memory usage
-            // This enables string interning for better performance with repeated literals
-            gen.emit_call("__string_intern");
+            // Allocate permanent storage for this literal
+            char* permanent_str = new char[value.length() + 1];
+            strcpy(permanent_str, value.c_str());
+            literal_storage[value] = permanent_str;
+            str_ptr = permanent_str;
         }
+        
+        uint64_t str_literal_addr = reinterpret_cast<uint64_t>(str_ptr);
+        gen.emit_mov_reg_imm(7, static_cast<int64_t>(str_literal_addr)); // RDI = first argument
+        
+        // Use string interning for memory efficiency
+        gen.emit_call("__string_intern");
     }
     
     // Result is now in RAX (pointer to GoTSString)

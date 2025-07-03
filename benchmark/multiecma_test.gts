@@ -8,9 +8,9 @@ console.log(x + "world");
 console.time("multiecma");
 
 const promises = [];
-for (let i: int64 = 0; i < 11; i++) {
+for (let i: int64 = 0; i < 31; i++) {
     // intentional to call with same number every time to test performance better
-    promises.push(go fib(11));
+    promises.push(go fib(31));
 }
 
 const results = await Promise.all(promises);
