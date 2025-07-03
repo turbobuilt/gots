@@ -369,6 +369,191 @@ void GoTSCompiler::create_synthetic_default_export(Module& module) {
     // The result would be: module = { foo: 1, bar: [Function] }
 }
 
+// Enhanced lazy loading system implementation
+Module* GoTSCompiler::load_module_lazy(const std::string& module_path) {
+    // Check if module is already in cache
+    auto it = modules.find(module_path);
+    if (it != modules.end()) {
+        Module& module = it->second;
+        
+        // If already loaded, return it
+        if (module.is_ready()) {
+            return &module;
+        }
+        
+        // If currently loading, we have a circular import
+        if (module.is_loading()) {
+            handle_circular_import(module_path);
+            return &module;  // Return partial module
+        }
+        
+        // If has error, throw with stack trace
+        if (module.has_error()) {
+            throw std::runtime_error("Module load failed: " + module_path + "\n" + 
+                                      module.load_info.error_message + "\n" + 
+                                      get_import_stack_trace());
+        }
+    }
+    
+    // Check for circular import before starting load
+    if (is_circular_import(module_path)) {
+        std::cerr << "CIRCULAR IMPORT DETECTED: " << module_path << std::endl;
+        std::cerr << get_import_stack_trace() << std::endl;
+        return handle_circular_import_and_return(module_path);
+    }
+    
+    // Start loading the module
+    Module& module = modules[module_path];
+    module.path = module_path;
+    module.state = ModuleState::LOADING;
+    module.load_info.import_stack = current_loading_stack;
+    current_loading_stack.push_back(module_path);
+    
+    std::cerr << "LOADING MODULE: " << module_path << " (stack depth: " << current_loading_stack.size() << ")" << std::endl;
+    
+    try {
+        // Resolve the actual file path using current file context
+        std::string resolved_path = resolve_module_path(module_path, current_file_path);
+        module.path = resolved_path;
+        
+        // Read the file
+        std::ifstream file(resolved_path);
+        if (!file.is_open()) {
+            throw std::runtime_error("Cannot open module file: " + resolved_path);
+        }
+        
+        std::string source((std::istreambuf_iterator<char>(file)),
+                           std::istreambuf_iterator<char>());
+        file.close();
+        
+        // Parse the module AST (but don't execute yet - that's the lazy part)
+        Lexer lexer(source);
+        auto tokens = lexer.tokenize();
+        Parser parser(std::move(tokens));
+        module.ast = parser.parse();
+        
+        // Analyze exports (but don't execute code yet)
+        prepare_partial_exports(module);
+        
+        // Mark as loaded
+        module.state = ModuleState::LOADED;
+        module.loaded = true;  // Backward compatibility
+        
+        // Remove from loading stack
+        current_loading_stack.pop_back();
+        
+        std::cerr << "MODULE LOADED SUCCESSFULLY: " << module_path << std::endl;
+        
+        return &module;
+        
+    } catch (const std::exception& e) {
+        // Handle loading error
+        module.state = ModuleState::ERROR;
+        module.load_info.error_message = e.what();
+        current_loading_stack.pop_back();
+        throw;
+    }
+}
+
+bool GoTSCompiler::is_circular_import(const std::string& module_path) {
+    // Check if module_path is already in the loading stack
+    for (const auto& loading_module : current_loading_stack) {
+        if (loading_module == module_path) {
+            return true;
+        }
+    }
+    return false;
+}
+
+Module* GoTSCompiler::handle_circular_import_and_return(const std::string& module_path) {
+    // Find the module in cache (it should exist since we're loading it)
+    auto it = modules.find(module_path);
+    if (it != modules.end()) {
+        Module& module = it->second;
+        
+        // Mark as partial if not already
+        if (module.state == ModuleState::LOADING) {
+            module.state = ModuleState::PARTIAL_LOADED;
+            module.exports_partial = true;
+        }
+        
+        return &module;
+    }
+    
+    // Create new partial module
+    Module& module = modules[module_path];
+    module.path = module_path;
+    module.state = ModuleState::PARTIAL_LOADED;
+    module.exports_partial = true;
+    module.load_info.import_stack = current_loading_stack;
+    
+    return &module;
+}
+
+void GoTSCompiler::handle_circular_import(const std::string& module_path) {
+    // Log the circular import for debugging
+    std::string stack_trace = get_import_stack_trace();
+    
+    // For now, just continue with partial loading
+    // In production, you might want to emit a warning
+    // std::cerr << "Warning: Circular import detected: " << module_path << std::endl;
+    // std::cerr << "Import stack: " << stack_trace << std::endl;
+}
+
+std::string GoTSCompiler::get_import_stack_trace() const {
+    std::string trace = "Import stack:\n";
+    for (int i = current_loading_stack.size() - 1; i >= 0; --i) {
+        trace += "  " + std::to_string(current_loading_stack.size() - i) + ". " + 
+                 current_loading_stack[i] + "\n";
+    }
+    return trace;
+}
+
+void GoTSCompiler::execute_module_code(Module& module) {
+    // Only execute if not already executed
+    if (module.code_executed) {
+        return;
+    }
+    
+    // Execute the module's AST
+    for (const auto& stmt : module.ast) {
+        // This would execute the statements in the module
+        // For now, just mark as executed
+        // In real implementation, would call stmt->generate_code()
+    }
+    
+    module.code_executed = true;
+}
+
+void GoTSCompiler::prepare_partial_exports(Module& module) {
+    // Analyze exports in the module without executing code
+    bool has_named_exports = false;
+    
+    for (const auto& stmt : module.ast) {
+        if (auto export_stmt = dynamic_cast<ExportStatement*>(stmt.get())) {
+            if (export_stmt->is_default) {
+                module.has_default_export = true;
+                module.default_export_name = "default";
+            } else {
+                has_named_exports = true;
+                // Add named exports to module
+                for (const auto& spec : export_stmt->specifiers) {
+                    // Create placeholder variables for now
+                    Variable placeholder;
+                    placeholder.name = spec.exported_name;
+                    placeholder.type = DataType::UNKNOWN;  // Will be determined later
+                    module.exports[spec.exported_name] = placeholder;
+                }
+            }
+        }
+    }
+    
+    // Create synthetic default export if no default but has named exports
+    if (!module.has_default_export && has_named_exports) {
+        create_synthetic_default_export(module);
+    }
+}
+
 void GoTSCompiler::compile_file(const std::string& file_path) {
     // Read and compile a file directly
     std::ifstream file(file_path);

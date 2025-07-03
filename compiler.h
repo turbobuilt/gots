@@ -5,6 +5,7 @@
 #include <unordered_map>
 #include <memory>
 #include <cstdint>
+#include <chrono>
 
 namespace gots {
 
@@ -17,6 +18,7 @@ enum class TokenType {
     TENSOR, NEW,
     CLASS, EXTENDS, SUPER, THIS, CONSTRUCTOR,
     PUBLIC, PRIVATE, PROTECTED, STATIC,
+    EACH, IN, PIPE,  // Added for for-each syntax
     LPAREN, RPAREN, LBRACE, RBRACE, LBRACKET, RBRACKET,
     SEMICOLON, COMMA, DOT, COLON, QUESTION,
     ASSIGN, PLUS, MINUS, MULTIPLY, DIVIDE, MODULO, POWER,
@@ -338,6 +340,12 @@ struct ArrayLiteral : ExpressionNode {
     void generate_code(CodeGenerator& gen, TypeInference& types) override;
 };
 
+struct ObjectLiteral : ExpressionNode {
+    std::vector<std::pair<std::string, std::unique_ptr<ExpressionNode>>> properties;
+    ObjectLiteral() {}
+    void generate_code(CodeGenerator& gen, TypeInference& types) override;
+};
+
 struct TypedArrayLiteral : ExpressionNode {
     std::vector<std::unique_ptr<ExpressionNode>> elements;
     DataType array_type;
@@ -396,6 +404,16 @@ struct ForLoop : ASTNode {
     std::unique_ptr<ExpressionNode> condition;
     std::unique_ptr<ASTNode> update;
     std::vector<std::unique_ptr<ASTNode>> body;
+    void generate_code(CodeGenerator& gen, TypeInference& types) override;
+};
+
+struct ForEachLoop : ASTNode {
+    std::string index_var_name;   // index for arrays, key for objects
+    std::string value_var_name;   // value variable name
+    std::unique_ptr<ExpressionNode> iterable;  // the array/object to iterate over
+    std::vector<std::unique_ptr<ASTNode>> body;
+    ForEachLoop(const std::string& index_name, const std::string& value_name)
+        : index_var_name(index_name), value_var_name(value_name) {}
     void generate_code(CodeGenerator& gen, TypeInference& types) override;
 };
 
@@ -588,6 +606,7 @@ private:
     std::unique_ptr<ASTNode> parse_variable_declaration();
     std::unique_ptr<ASTNode> parse_if_statement();
     std::unique_ptr<ASTNode> parse_for_statement();
+    std::unique_ptr<ASTNode> parse_for_each_statement();
     std::unique_ptr<ASTNode> parse_switch_statement();
     std::unique_ptr<CaseClause> parse_case_clause();
     std::unique_ptr<ASTNode> parse_return_statement();
@@ -605,14 +624,47 @@ public:
 };
 
 // Module system structures
+enum class ModuleState {
+    NOT_LOADED,      // Module not yet loaded
+    LOADING,         // Currently being loaded (for circular import detection)
+    LOADED,          // Fully loaded and ready
+    ERROR,           // Failed to load
+    PARTIAL_LOADED   // Partially loaded due to circular import
+};
+
+struct ModuleLoadInfo {
+    std::string error_message;
+    std::vector<std::string> import_stack;  // Stack trace for circular imports
+    std::chrono::steady_clock::time_point load_start_time;
+    
+    ModuleLoadInfo() : load_start_time(std::chrono::steady_clock::now()) {}
+};
+
 struct Module {
     std::string path;
     std::unordered_map<std::string, Variable> exports;
     std::unordered_map<std::string, Function> exported_functions;
     bool has_default_export = false;
     std::string default_export_name;
-    bool loaded = false;
+    bool loaded = false;  // Keep for backward compatibility
     std::vector<std::unique_ptr<ASTNode>> ast;
+    
+    // New lazy loading system
+    ModuleState state = ModuleState::NOT_LOADED;
+    ModuleLoadInfo load_info;
+    bool exports_partial = false;  // True if exports are incomplete due to circular import
+    std::vector<std::string> pending_imports;  // List of imports this module depends on
+    
+    // Lazy loading flag - only execute module code when exports are accessed
+    bool code_executed = false;
+    
+    Module() = default;
+    Module(const std::string& module_path) : path(module_path) {}
+    
+    bool is_ready() const { return state == ModuleState::LOADED; }
+    bool is_loading() const { return state == ModuleState::LOADING; }
+    bool has_error() const { return state == ModuleState::ERROR; }
+    bool is_partial() const { return state == ModuleState::PARTIAL_LOADED; }
 };
 
 class GoTSCompiler {
@@ -640,6 +692,20 @@ public:
     void create_synthetic_default_export(Module& module);
     void set_current_file(const std::string& file_path) { current_file_path = file_path; }
     const std::string& get_current_file() const { return current_file_path; }
+    
+    // Enhanced lazy loading system
+    Module* load_module_lazy(const std::string& module_path);
+    bool is_circular_import(const std::string& module_path);
+    void handle_circular_import(const std::string& module_path);
+    Module* handle_circular_import_and_return(const std::string& module_path);
+    std::string get_import_stack_trace() const;
+    void execute_module_code(Module& module);
+    void prepare_partial_exports(Module& module);
+    
+private:
+    std::vector<std::string> current_loading_stack;  // Track circular imports
+    
+public:
     
     // Class management
     void register_class(const ClassInfo& class_info);

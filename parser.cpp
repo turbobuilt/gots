@@ -375,6 +375,34 @@ std::unique_ptr<ExpressionNode> Parser::parse_primary() {
         return array_literal;
     }
     
+    if (match(TokenType::LBRACE)) {
+        auto object_literal = std::make_unique<ObjectLiteral>();
+        
+        if (!check(TokenType::RBRACE)) {
+            do {
+                // Parse property: key : value
+                if (!match(TokenType::IDENTIFIER) && !match(TokenType::STRING)) {
+                    throw std::runtime_error("Expected property name");
+                }
+                std::string key = tokens[pos - 1].value;
+                
+                if (!match(TokenType::COLON)) {
+                    throw std::runtime_error("Expected ':' after property name");
+                }
+                
+                auto value = parse_expression();
+                object_literal->properties.emplace_back(key, std::move(value));
+                
+            } while (match(TokenType::COMMA));
+        }
+        
+        if (!match(TokenType::RBRACE)) {
+            throw std::runtime_error("Expected '}' after object properties");
+        }
+        
+        return object_literal;
+    }
+    
     if (match(TokenType::LPAREN)) {
         auto expr = parse_expression();
         if (!match(TokenType::RPAREN)) {
@@ -508,7 +536,12 @@ std::unique_ptr<ASTNode> Parser::parse_statement() {
     }
     
     if (check(TokenType::FOR)) {
-        return parse_for_statement();
+        // Check if this is "for each" syntax
+        if (peek_token(1).type == TokenType::EACH) {
+            return parse_for_each_statement();
+        } else {
+            return parse_for_statement();
+        }
     }
     
     if (check(TokenType::SWITCH)) {
@@ -746,6 +779,56 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
     }
     
     return std::move(for_loop);
+}
+
+std::unique_ptr<ASTNode> Parser::parse_for_each_statement() {
+    if (!match(TokenType::FOR)) {
+        throw std::runtime_error("Expected 'for'");
+    }
+    
+    if (!match(TokenType::EACH)) {
+        throw std::runtime_error("Expected 'each' after 'for'");
+    }
+    
+    // Parse: index, value (where index represents index for arrays or key for objects)
+    if (!match(TokenType::IDENTIFIER)) {
+        throw std::runtime_error("Expected index/key variable name");
+    }
+    std::string index_var = tokens[pos - 1].value;
+    
+    if (!match(TokenType::COMMA)) {
+        throw std::runtime_error("Expected ',' after index/key variable");
+    }
+    
+    if (!match(TokenType::IDENTIFIER)) {
+        throw std::runtime_error("Expected value variable name");
+    }
+    std::string value_var = tokens[pos - 1].value;
+    
+    if (!match(TokenType::IN)) {
+        throw std::runtime_error("Expected 'in' after variable declarations");
+    }
+    
+    // Parse the iterable expression
+    auto iterable = parse_expression();
+    
+    auto for_each = std::make_unique<ForEachLoop>(index_var, value_var);
+    for_each->iterable = std::move(iterable);
+    
+    // Parse the body
+    if (match(TokenType::LBRACE)) {
+        while (!check(TokenType::RBRACE) && !check(TokenType::EOF_TOKEN)) {
+            for_each->body.push_back(parse_statement());
+        }
+        
+        if (!match(TokenType::RBRACE)) {
+            throw std::runtime_error("Expected '}' after for-each body");
+        }
+    } else {
+        for_each->body.push_back(parse_statement());
+    }
+    
+    return std::move(for_each);
 }
 
 std::unique_ptr<ASTNode> Parser::parse_return_statement() {

@@ -883,6 +883,40 @@ void __object_destroy(int64_t object_id) {
     }
 }
 
+void __object_set_property_name(int64_t object_id, int64_t property_index, const char* property_name) {
+    std::cout << "DEBUG: __object_set_property_name called with object_id=" << object_id 
+              << ", property_index=" << property_index 
+              << ", property_name=" << (property_name ? property_name : "NULL") << std::endl;
+    
+    auto it = object_registry.find(object_id);
+    if (it != object_registry.end() && property_index >= 0 && property_index < it->second->property_count) {
+        if (property_name) {
+            it->second->property_names[property_index] = std::string(property_name);
+            std::cout << "DEBUG: Set property name " << property_index 
+                      << " of object " << object_id 
+                      << " to '" << property_name << "'" << std::endl;
+        } else {
+            std::cout << "DEBUG: ERROR: property_name is NULL" << std::endl;
+        }
+    } else {
+        std::cout << "DEBUG: ERROR: Object not found or property index out of bounds" << std::endl;
+    }
+}
+
+const char* __object_get_property_name(int64_t object_id, int64_t property_index) {
+    auto it = object_registry.find(object_id);
+    if (it != object_registry.end() && property_index >= 0 && property_index < it->second->property_count) {
+        const std::string& name = it->second->property_names[property_index];
+        std::cout << "DEBUG: Get property name " << property_index 
+                  << " of object " << object_id 
+                  << " = '" << name << "'" << std::endl;
+        return name.c_str();
+    }
+    std::cout << "DEBUG: Failed to get property name " << property_index 
+              << " of object " << object_id << std::endl;
+    return "unknown";
+}
+
 int64_t __object_call_method(int64_t object_id, const char* method_name, int64_t* args, int64_t arg_count) {
     // TODO: Implement method calling via function registry
     std::cout << "DEBUG: Call method " << method_name 

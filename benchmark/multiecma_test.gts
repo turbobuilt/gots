@@ -51,3 +51,9 @@ switch (y) {
 import { bobby } from "./testb.gts";
 
 console.log("bobby is ", bobby)
+
+let data = { x: "x", y: "y val", z: "z val" }
+console.log("data is", data)
+for each key, value in data {
+    console.log("key is", key, "value is", value)
+}

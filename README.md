@@ -1,5 +1,9 @@
 # GoTS (Go TypeScript) Compiler
 
+## (Work In Progress!)
+
+Many features do not work yet
+
 A high-performance programming language compiler that combines the best of Go's concurrency model with TypeScript's syntax and static typing, generating direct machine code for maximum performance.
 
 ## Features

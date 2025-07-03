@@ -515,21 +515,27 @@ struct ObjectInstance {
     std::string class_name;
     std::unordered_map<std::string, int64_t> properties;  // Property name -> value
     int64_t* property_data;  // Raw memory for properties
+    std::string* property_names;  // Property names for iteration
     int64_t property_count;
     
     ObjectInstance(const std::string& cls_name, int64_t prop_count) 
         : class_name(cls_name), property_count(prop_count) {
         if (prop_count > 0) {
             property_data = new int64_t[prop_count];
+            property_names = new std::string[prop_count];
             memset(property_data, 0, prop_count * sizeof(int64_t));
         } else {
             property_data = nullptr;
+            property_names = nullptr;
         }
     }
     
     ~ObjectInstance() {
         if (property_data) {
             delete[] property_data;
+        }
+        if (property_names) {
+            delete[] property_names;
         }
     }
 };
@@ -650,6 +656,10 @@ extern "C" {
     void __object_set_property(int64_t object_id, int64_t property_index, int64_t value);
     int64_t __object_get_property(int64_t object_id, int64_t property_index);
     void __object_destroy(int64_t object_id);
+    
+    // Property name management for iteration
+    void __object_set_property_name(int64_t object_id, int64_t property_index, const char* property_name);
+    const char* __object_get_property_name(int64_t object_id, int64_t property_index);
     
     // Method calling
     int64_t __object_call_method(int64_t object_id, const char* method_name, int64_t* args, int64_t arg_count);

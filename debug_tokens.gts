@@ -1,1 +1,1 @@
-var a = 5;
+for each i, value in arr

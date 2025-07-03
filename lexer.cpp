@@ -13,6 +13,8 @@ static std::unordered_map<std::string, TokenType> keywords = {
     {"const", TokenType::CONST},
     {"if", TokenType::IF},
     {"for", TokenType::FOR},
+    {"each", TokenType::EACH},
+    {"in", TokenType::IN},
     {"while", TokenType::WHILE},
     {"return", TokenType::RETURN},
     {"switch", TokenType::SWITCH},
@@ -331,7 +333,8 @@ std::vector<Token> Lexer::tokenize() {
                         value = "||";
                     } else {
                         pos--; column--;
-                        continue; // Skip single |
+                        type = TokenType::PIPE;
+                        value = "|";
                     }
                     break;
                 default:
