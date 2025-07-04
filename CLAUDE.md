@@ -141,3 +141,7 @@ For checks and errors, we will have debug and production mode.
 
 Production mode will jit without checks for array access etc. Still do immediate crashes with stack trace on errors
 Regular will jit generate code with checks for better debugging.
+
+To test npm packages, copy the gots binary to ./tests, cd into tests and run from there
+
+When asked to implement ECMAscript things, you can reference ./ecmascript_reference.txt. It is a 10,000 line file, so searching is wise.

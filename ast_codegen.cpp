@@ -5,6 +5,9 @@
 #include <cstring>
 #include <cstdlib>
 
+// Simple global constant storage for imported constants
+static std::unordered_map<std::string, double> global_imported_constants;
+
 namespace gots {
 
 // Static member definition
@@ -56,6 +59,21 @@ void StringLiteral::generate_code(CodeGenerator& gen, TypeInference&) {
 }
 
 void Identifier::generate_code(CodeGenerator& gen, TypeInference& types) {
+    // Check if this is a global imported constant first
+    auto it = global_imported_constants.find(name);
+    if (it != global_imported_constants.end()) {
+        // Load the constant value directly as an immediate using bit preservation
+        union {
+            double f;
+            int64_t i;
+        } converter;
+        converter.f = it->second;
+        gen.emit_mov_reg_imm(0, converter.i);
+        result_type = DataType::FLOAT64;
+        return;
+    }
+    
+    // Fall back to local variable lookup
     DataType var_type = types.get_variable_type(name);
     result_type = var_type;
     
@@ -574,6 +592,10 @@ void MethodCall::generate_code(CodeGenerator& gen, TypeInference& types) {
                     // For numbers - handle all numeric types explicitly
                     gen.emit_mov_reg_reg(7, 0); // RDI = RAX
                     gen.emit_call("__console_log_number");
+                } else if (arguments[i]->result_type == DataType::CLASS_INSTANCE) {
+                    // For objects - print them properly
+                    gen.emit_mov_reg_reg(7, 0); // RDI = RAX (object_id)
+                    gen.emit_call("__console_log_object");
                 } else {
                     // For unknown types, use auto-detection to handle arrays or numbers
                     gen.emit_mov_reg_reg(7, 0); // RDI = RAX
@@ -784,13 +806,11 @@ void ObjectLiteral::generate_code(CodeGenerator& gen, TypeInference& types) {
             name_ptr = permanent_name;
         }
         
-        // TEMPORARILY DISABLED: Call __object_set_property_name(object_id, property_index, property_name)
-        std::cout << "DEBUG CODEGEN: SKIPPING __object_set_property_name call for property '" 
-                  << prop.first << "' at index " << i << std::endl;
-        // gen.emit_mov_reg_mem(7, object_offset); // RDI = object_id
-        // gen.emit_mov_reg_imm(6, i); // RSI = property_index
-        // gen.emit_mov_reg_imm(2, reinterpret_cast<int64_t>(name_ptr)); // RDX = property_name
-        // gen.emit_call("__object_set_property_name");
+        // Call __object_set_property_name(object_id, property_index, property_name)
+        gen.emit_mov_reg_mem(7, object_offset); // RDI = object_id
+        gen.emit_mov_reg_imm(6, i); // RSI = property_index
+        gen.emit_mov_reg_imm(2, reinterpret_cast<int64_t>(name_ptr)); // RDX = property_name
+        gen.emit_call("__object_set_property_name");
         
         // Generate code for the property value
         prop.second->generate_code(gen, types);
@@ -915,10 +935,10 @@ void Assignment::generate_code(CodeGenerator& gen, TypeInference& types) {
             if (new_expr) {
                 // Set the class type information for this variable
                 types.set_variable_class_type(variable_name, new_expr->class_name);
-                // ALWAYS set the variable type to CLASS_INSTANCE for object instances
-                // This fixes the bug where inferred object types weren't properly classified
-                variable_type = DataType::CLASS_INSTANCE;
             }
+            // ALWAYS set the variable type to CLASS_INSTANCE for object instances
+            // This includes both NewExpression and ObjectLiteral
+            variable_type = DataType::CLASS_INSTANCE;
         }
         
         // Allocate or get the proper stack offset for this variable
@@ -1111,8 +1131,9 @@ void ForEachLoop::generate_code(CodeGenerator& gen, TypeInference& types) {
     gen.emit_mov_mem_reg(index_offset, 0); // Store index = 0
     
     // But also create user-visible variables for the loop body  
-    // For now, both arrays and objects use INT64 indices (will fix property names later)
-    int64_t user_index_offset = types.allocate_variable(index_var_name, DataType::INT64);
+    // Arrays use INT64 indices, objects use STRING keys
+    DataType index_type = (iterable->result_type == DataType::TENSOR) ? DataType::INT64 : DataType::STRING;
+    int64_t user_index_offset = types.allocate_variable(index_var_name, index_type);
     int64_t user_value_offset = types.allocate_variable(value_var_name, DataType::UNKNOWN);
     
     gen.emit_label(loop_check);
@@ -1186,10 +1207,15 @@ void ForEachLoop::generate_code(CodeGenerator& gen, TypeInference& types) {
         gen.emit_compare(0, 1); // Compare AL with 0
         gen.emit_jump_if_not_zero(loop_end); // Jump if AL != 0 (i.e., if index >= max_properties)
         
-        // TEMPORARY: Use numeric index instead of property name
-        // TODO: Implement proper property name retrieval later
-        gen.emit_mov_reg_mem(0, index_offset); // RAX = current index
-        gen.emit_mov_mem_reg(user_index_offset, 0); // Store index as key (0, 1, 2...)
+        // Get the property name for the current index
+        gen.emit_mov_reg_mem(7, iterable_offset); // RDI = object_id
+        gen.emit_mov_reg_mem(6, index_offset); // RSI = property_index
+        gen.emit_call("__object_get_property_name"); // RAX = property name (const char*)
+        
+        // Create a GoTS string from the property name
+        gen.emit_mov_reg_reg(7, 0); // RDI = property name
+        gen.emit_call("__string_intern"); // RAX = GoTS string
+        gen.emit_mov_mem_reg(user_index_offset, 0); // Store property name string in key variable
         
         // Get the value at current property index
         gen.emit_mov_reg_mem(7, iterable_offset); // RDI = object_id
@@ -1868,10 +1894,44 @@ void ImportStatement::generate_code(CodeGenerator& gen, TypeInference& types) {
                 // Look for the exported value in the module's AST
                 for (const auto& stmt : module->ast) {
                     if (auto export_stmt = dynamic_cast<ExportStatement*>(stmt.get())) {
+                        std::cout << "DEBUG: Found export statement for spec '" << spec.local_name << "'" << std::endl;
+                        
                         // Check if this export statement has a declaration (like "export const bobby = 'hello'")
                         if (export_stmt->declaration) {
-                            // This is an export declaration, generate code for it
+                            std::cout << "DEBUG: Export has declaration" << std::endl;
                             
+                            // Check if this is an Assignment with a number literal value
+                            if (auto assignment = dynamic_cast<Assignment*>(export_stmt->declaration.get())) {
+                                std::cout << "DEBUG: Export declaration is Assignment with variable '" << assignment->variable_name << "'" << std::endl;
+                                
+                                if (assignment->variable_name == spec.local_name) {
+                                    std::cout << "DEBUG: Variable name matches!" << std::endl;
+                                    
+                                    // Check if the value is a number literal
+                                    if (auto number_literal = dynamic_cast<NumberLiteral*>(assignment->value.get())) {
+                                        // Store the constant value globally instead of using stack
+                                        global_imported_constants[spec.local_name] = number_literal->value;
+                                        types.set_variable_type(spec.local_name, DataType::FLOAT64);
+                                        
+                                        std::cout << "DEBUG: Imported constant '" << spec.local_name 
+                                                  << "' = " << number_literal->value << " (stored globally)" << std::endl;
+                                        break;
+                                    } else {
+                                        std::cout << "DEBUG: Value is not a number literal" << std::endl;
+                                    }
+                                }
+                            } else {
+                                std::cout << "DEBUG: Export declaration is not Assignment, checking other types..." << std::endl;
+                                
+                                // Try to cast to other possible types
+                                if (auto func_decl = dynamic_cast<FunctionDecl*>(export_stmt->declaration.get())) {
+                                    std::cout << "DEBUG: Export declaration is FunctionDecl: " << func_decl->name << std::endl;
+                                } else {
+                                    std::cout << "DEBUG: Export declaration is unknown type" << std::endl;
+                                }
+                            }
+                            
+                            // For non-constant exports, use the original stack-based approach
                             // Allocate stack space for the imported variable
                             int64_t offset = types.allocate_variable(spec.local_name, DataType::STRING);
                             

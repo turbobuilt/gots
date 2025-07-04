@@ -925,7 +925,7 @@ int64_t __object_call_method(int64_t object_id, const char* method_name, int64_t
     return 0;  // Placeholder return value
 }
 
-// Console log that auto-detects arrays
+// Console log that auto-detects arrays and strings
 void __console_log_auto(int64_t value) {
     if (__is_array_pointer(value)) {
         // Treat as array
@@ -937,9 +937,66 @@ void __console_log_auto(int64_t value) {
             std::cout << arr->data[i];
         }
         std::cout << "]";
+    } else if (value > 0x1000000) {  // Likely a heap pointer
+        // Try to check if it's a string
+        try {
+            GoTSString* str = reinterpret_cast<GoTSString*>(value);
+            const char* c = str->c_str();
+            if (c && strlen(c) < 10000) {  // Reasonable string length check
+                std::cout << c;
+                return;
+            }
+        } catch (...) {
+            // Not a valid string, fall through
+        }
+        // Just print as number
+        std::cout << value;
     } else {
         // Treat as number
         std::cout << value;
+    }
+}
+
+// Console log for objects
+void __console_log_object(int64_t object_id) {
+    auto it = object_registry.find(object_id);
+    if (it != object_registry.end()) {
+        ObjectInstance* obj = it->second.get();
+        std::cout << "{ ";
+        for (int64_t i = 0; i < obj->property_count; i++) {
+            if (i > 0) std::cout << ", ";
+            
+            // Get property name
+            const std::string& prop_name = obj->property_names[i];
+            std::cout << prop_name << ": ";
+            
+            // Get property value
+            int64_t value = obj->property_data[i];
+            
+            // Check if value is a string pointer
+            // All GoTS strings are allocated on the heap, so they should be valid pointers
+            // We'll use a simple heuristic: if it's a large value that looks like a pointer
+            if (value > 0x1000000) {  // Likely a heap pointer
+                // Try to safely check if it's a valid GoTSString
+                try {
+                    GoTSString* str = reinterpret_cast<GoTSString*>(value);
+                    // GoTSString should have reasonable string length
+                    const char* c = str->c_str();
+                    if (c && strlen(c) < 10000) {  // Reasonable string length check
+                        std::cout << "\"" << c << "\"";
+                    } else {
+                        std::cout << value;
+                    }
+                } catch (...) {
+                    std::cout << value;
+                }
+            } else {
+                std::cout << value;
+            }
+        }
+        std::cout << " }";
+    } else {
+        std::cout << "[object " << object_id << "]";
     }
 }
 
@@ -1242,6 +1299,1011 @@ void __console_log_string(void* string_ptr) {
         GoTSString* str = static_cast<GoTSString*>(string_ptr);
         std::cout << str->c_str();
     }
+}
+
+// Date/Time functions - high performance implementation
+int64_t __date_now() {
+    // Use high_resolution_clock for maximum performance and precision
+    auto now = std::chrono::high_resolution_clock::now();
+    auto epoch = now.time_since_epoch();
+    
+    // Convert to milliseconds since Unix epoch (like JavaScript Date.now())
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(epoch);
+    return static_cast<int64_t>(ms.count());
+}
+
+// GoTSDate Implementation - High-Performance JavaScript-Compatible Date Class
+
+// Private helper methods implementation
+void GoTSDate::update_timezone_cache() const {
+    if (!timezone_offset_cached) {
+        // Get current local timezone offset in minutes
+        auto now = std::chrono::system_clock::now();
+        auto utc_time = std::chrono::system_clock::to_time_t(now);
+        
+        // Get local time struct
+        std::tm* local_tm = std::localtime(&utc_time);
+        if (local_tm) {
+            // Calculate offset from UTC in minutes
+            // This is a simplified implementation - a full implementation would need
+            // to handle DST transitions and various timezone complexities
+            cached_timezone_offset = local_tm->tm_gmtoff / 60; // Convert seconds to minutes
+        } else {
+            cached_timezone_offset = 0; // Fallback to UTC
+        }
+        timezone_offset_cached = true;
+    }
+}
+
+bool GoTSDate::is_leap_year(int64_t year) {
+    return (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+}
+
+int64_t GoTSDate::days_in_month(int64_t year, int64_t month) {
+    static const int64_t days_per_month[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    
+    if (month < 0 || month > 11) return 0;
+    
+    if (month == 1 && is_leap_year(year)) { // February in leap year
+        return 29;
+    }
+    
+    return days_per_month[month];
+}
+
+int64_t GoTSDate::day_of_week(int64_t year, int64_t month, int64_t day) {
+    // Zeller's congruence for day of week calculation
+    // Returns 0=Sunday, 1=Monday, ..., 6=Saturday (JavaScript compatible)
+    
+    if (month < 3) {
+        month += 12;
+        year--;
+    }
+    
+    int64_t k = year % 100;
+    int64_t j = year / 100;
+    
+    int64_t h = (day + ((13 * (month + 1)) / 5) + k + (k / 4) + (j / 4) - 2 * j) % 7;
+    
+    // Convert to JavaScript format (0=Sunday)
+    return (h + 5) % 7;
+}
+
+int64_t GoTSDate::days_since_epoch(int64_t year, int64_t month, int64_t day) const {
+    // Calculate days since Unix epoch (January 1, 1970)
+    // This is a simplified calculation - production code should handle edge cases
+    
+    int64_t days = 0;
+    
+    // Add days for complete years since 1970
+    for (int64_t y = 1970; y < year; y++) {
+        days += is_leap_year(y) ? 366 : 365;
+    }
+    
+    // Add days for complete months in the current year
+    for (int64_t m = 0; m < month; m++) {
+        days += days_in_month(year, m);
+    }
+    
+    // Add remaining days
+    days += day - 1; // day is 1-based
+    
+    return days;
+}
+
+void GoTSDate::time_to_components(int64_t time, bool use_utc, int64_t& year, int64_t& month, 
+                                 int64_t& day, int64_t& hour, int64_t& minute, int64_t& second, 
+                                 int64_t& millisecond) const {
+    if (!use_utc) {
+        update_timezone_cache();
+        time += cached_timezone_offset * 60 * 1000; // Adjust for local timezone
+    }
+    
+    // Extract milliseconds
+    millisecond = time % 1000;
+    time /= 1000;
+    
+    // Extract seconds
+    second = time % 60;
+    time /= 60;
+    
+    // Extract minutes
+    minute = time % 60;
+    time /= 60;
+    
+    // Extract hours
+    hour = time % 24;
+    time /= 24;
+    
+    // Now time represents days since epoch
+    int64_t days = time;
+    
+    // Calculate year (approximate, then refine)
+    year = 1970 + (days / 365);
+    
+    // Adjust year by checking if we've gone too far
+    while (days_since_epoch(year, 0, 1) > days) {
+        year--;
+    }
+    while (days_since_epoch(year + 1, 0, 1) <= days) {
+        year++;
+    }
+    
+    // Calculate remaining days in the year
+    int64_t remaining_days = days - days_since_epoch(year, 0, 1);
+    
+    // Calculate month
+    month = 0;
+    while (month < 11 && remaining_days >= days_in_month(year, month)) {
+        remaining_days -= days_in_month(year, month);
+        month++;
+    }
+    
+    // Calculate day
+    day = remaining_days + 1; // day is 1-based
+}
+
+int64_t GoTSDate::components_to_time(int64_t year, int64_t month, int64_t day, 
+                                    int64_t hour, int64_t minute, int64_t second, 
+                                    int64_t millisecond, bool use_utc) const {
+    // Normalize components
+    if (month < 0 || month > 11) {
+        int64_t year_offset = month / 12;
+        if (month < 0) year_offset--;
+        year += year_offset;
+        month -= year_offset * 12;
+    }
+    
+    // Calculate total milliseconds
+    int64_t days = days_since_epoch(year, month, day);
+    int64_t total_ms = days * 24 * 60 * 60 * 1000;
+    total_ms += hour * 60 * 60 * 1000;
+    total_ms += minute * 60 * 1000;
+    total_ms += second * 1000;
+    total_ms += millisecond;
+    
+    if (!use_utc) {
+        update_timezone_cache();
+        total_ms -= cached_timezone_offset * 60 * 1000; // Convert local to UTC
+    }
+    
+    return total_ms;
+}
+
+// Constructors
+GoTSDate::GoTSDate() : timezone_offset_cached(false) {
+    time_value = __date_now();
+}
+
+GoTSDate::GoTSDate(int64_t millis) : time_value(millis), timezone_offset_cached(false) {
+}
+
+GoTSDate::GoTSDate(int64_t year, int64_t month, int64_t day, 
+                   int64_t hour, int64_t minute, int64_t second, 
+                   int64_t millisecond) : timezone_offset_cached(false) {
+    time_value = components_to_time(year, month, day, hour, minute, second, millisecond, false);
+}
+
+GoTSDate::GoTSDate(const char* dateString) : timezone_offset_cached(false) {
+    time_value = parse_iso_string(dateString);
+}
+
+// Core time methods
+int64_t GoTSDate::setTime(int64_t time) {
+    time_value = time;
+    timezone_offset_cached = false; // Reset cache
+    return time_value;
+}
+
+// Static methods
+int64_t GoTSDate::now() {
+    return __date_now();
+}
+
+int64_t GoTSDate::UTC(int64_t year, int64_t month, int64_t day, 
+                      int64_t hour, int64_t minute, int64_t second, 
+                      int64_t millisecond) {
+    GoTSDate temp_date;
+    return temp_date.components_to_time(year, month, day, hour, minute, second, millisecond, true);
+}
+
+// Local time getters
+int64_t GoTSDate::getFullYear() const {
+    int64_t year, month, day, hour, minute, second, millisecond;
+    time_to_components(time_value, false, year, month, day, hour, minute, second, millisecond);
+    return year;
+}
+
+int64_t GoTSDate::getMonth() const {
+    int64_t year, month, day, hour, minute, second, millisecond;
+    time_to_components(time_value, false, year, month, day, hour, minute, second, millisecond);
+    return month;
+}
+
+int64_t GoTSDate::getDate() const {
+    int64_t year, month, day, hour, minute, second, millisecond;
+    time_to_components(time_value, false, year, month, day, hour, minute, second, millisecond);
+    return day;
+}
+
+int64_t GoTSDate::getDay() const {
+    int64_t year, month, day, hour, minute, second, millisecond;
+    time_to_components(time_value, false, year, month, day, hour, minute, second, millisecond);
+    return day_of_week(year, month, day);
+}
+
+int64_t GoTSDate::getHours() const {
+    int64_t year, month, day, hour, minute, second, millisecond;
+    time_to_components(time_value, false, year, month, day, hour, minute, second, millisecond);
+    return hour;
+}
+
+int64_t GoTSDate::getMinutes() const {
+    int64_t year, month, day, hour, minute, second, millisecond;
+    time_to_components(time_value, false, year, month, day, hour, minute, second, millisecond);
+    return minute;
+}
+
+int64_t GoTSDate::getSeconds() const {
+    int64_t year, month, day, hour, minute, second, millisecond;
+    time_to_components(time_value, false, year, month, day, hour, minute, second, millisecond);
+    return second;
+}
+
+int64_t GoTSDate::getMilliseconds() const {
+    int64_t year, month, day, hour, minute, second, millisecond;
+    time_to_components(time_value, false, year, month, day, hour, minute, second, millisecond);
+    return millisecond;
+}
+
+int64_t GoTSDate::getTimezoneOffset() const {
+    update_timezone_cache();
+    return -cached_timezone_offset; // JavaScript returns negative of timezone offset
+}
+
+// UTC time getters
+int64_t GoTSDate::getUTCFullYear() const {
+    int64_t year, month, day, hour, minute, second, millisecond;
+    time_to_components(time_value, true, year, month, day, hour, minute, second, millisecond);
+    return year;
+}
+
+int64_t GoTSDate::getUTCMonth() const {
+    int64_t year, month, day, hour, minute, second, millisecond;
+    time_to_components(time_value, true, year, month, day, hour, minute, second, millisecond);
+    return month;
+}
+
+int64_t GoTSDate::getUTCDate() const {
+    int64_t year, month, day, hour, minute, second, millisecond;
+    time_to_components(time_value, true, year, month, day, hour, minute, second, millisecond);
+    return day;
+}
+
+int64_t GoTSDate::getUTCDay() const {
+    int64_t year, month, day, hour, minute, second, millisecond;
+    time_to_components(time_value, true, year, month, day, hour, minute, second, millisecond);
+    return day_of_week(year, month, day);
+}
+
+int64_t GoTSDate::getUTCHours() const {
+    int64_t year, month, day, hour, minute, second, millisecond;
+    time_to_components(time_value, true, year, month, day, hour, minute, second, millisecond);
+    return hour;
+}
+
+int64_t GoTSDate::getUTCMinutes() const {
+    int64_t year, month, day, hour, minute, second, millisecond;
+    time_to_components(time_value, true, year, month, day, hour, minute, second, millisecond);
+    return minute;
+}
+
+int64_t GoTSDate::getUTCSeconds() const {
+    int64_t year, month, day, hour, minute, second, millisecond;
+    time_to_components(time_value, true, year, month, day, hour, minute, second, millisecond);
+    return second;
+}
+
+int64_t GoTSDate::getUTCMilliseconds() const {
+    int64_t year, month, day, hour, minute, second, millisecond;
+    time_to_components(time_value, true, year, month, day, hour, minute, second, millisecond);
+    return millisecond;
+}
+
+// Arithmetic operators
+GoTSDate GoTSDate::operator+(int64_t milliseconds) const {
+    return GoTSDate(time_value + milliseconds);
+}
+
+GoTSDate GoTSDate::operator-(int64_t milliseconds) const {
+    return GoTSDate(time_value - milliseconds);
+}
+
+int64_t GoTSDate::operator-(const GoTSDate& other) const {
+    return time_value - other.time_value;
+}
+
+GoTSDate& GoTSDate::operator+=(int64_t milliseconds) {
+    time_value += milliseconds;
+    return *this;
+}
+
+GoTSDate& GoTSDate::operator-=(int64_t milliseconds) {
+    time_value -= milliseconds;
+    return *this;
+}
+
+// Validation
+bool GoTSDate::isValid() const {
+    // JavaScript Date considers any finite number valid
+    // NaN time values are invalid
+    return time_value != INT64_MIN; // Use a sentinel value for invalid dates
+}
+
+bool GoTSDate::isValidDate(int64_t year, int64_t month, int64_t day) {
+    if (month < 0 || month > 11) return false;
+    if (day < 1 || day > days_in_month(year, month)) return false;
+    if (year < -271821 || year > 275760) return false; // JavaScript Date range
+    return true;
+}
+
+bool GoTSDate::isValidTime(int64_t hour, int64_t minute, int64_t second, int64_t millisecond) {
+    return hour >= 0 && hour < 24 &&
+           minute >= 0 && minute < 60 &&
+           second >= 0 && second < 60 &&
+           millisecond >= 0 && millisecond < 1000;
+}
+
+// Local time setters implementation
+int64_t GoTSDate::setFullYear(int64_t year, int64_t month, int64_t day) {
+    int64_t curr_year, curr_month, curr_day, curr_hour, curr_minute, curr_second, curr_millisecond;
+    time_to_components(time_value, false, curr_year, curr_month, curr_day, curr_hour, curr_minute, curr_second, curr_millisecond);
+    
+    if (month != -1) curr_month = month;
+    if (day != -1) curr_day = day;
+    
+    time_value = components_to_time(year, curr_month, curr_day, curr_hour, curr_minute, curr_second, curr_millisecond, false);
+    timezone_offset_cached = false;
+    return time_value;
+}
+
+int64_t GoTSDate::setMonth(int64_t month, int64_t day) {
+    int64_t curr_year, curr_month, curr_day, curr_hour, curr_minute, curr_second, curr_millisecond;
+    time_to_components(time_value, false, curr_year, curr_month, curr_day, curr_hour, curr_minute, curr_second, curr_millisecond);
+    
+    if (day != -1) curr_day = day;
+    
+    time_value = components_to_time(curr_year, month, curr_day, curr_hour, curr_minute, curr_second, curr_millisecond, false);
+    timezone_offset_cached = false;
+    return time_value;
+}
+
+int64_t GoTSDate::setDate(int64_t day) {
+    int64_t curr_year, curr_month, curr_day, curr_hour, curr_minute, curr_second, curr_millisecond;
+    time_to_components(time_value, false, curr_year, curr_month, curr_day, curr_hour, curr_minute, curr_second, curr_millisecond);
+    
+    time_value = components_to_time(curr_year, curr_month, day, curr_hour, curr_minute, curr_second, curr_millisecond, false);
+    timezone_offset_cached = false;
+    return time_value;
+}
+
+int64_t GoTSDate::setHours(int64_t hours, int64_t minutes, int64_t seconds, int64_t milliseconds) {
+    int64_t curr_year, curr_month, curr_day, curr_hour, curr_minute, curr_second, curr_millisecond;
+    time_to_components(time_value, false, curr_year, curr_month, curr_day, curr_hour, curr_minute, curr_second, curr_millisecond);
+    
+    if (minutes != -1) curr_minute = minutes;
+    if (seconds != -1) curr_second = seconds;
+    if (milliseconds != -1) curr_millisecond = milliseconds;
+    
+    time_value = components_to_time(curr_year, curr_month, curr_day, hours, curr_minute, curr_second, curr_millisecond, false);
+    timezone_offset_cached = false;
+    return time_value;
+}
+
+int64_t GoTSDate::setMinutes(int64_t minutes, int64_t seconds, int64_t milliseconds) {
+    int64_t curr_year, curr_month, curr_day, curr_hour, curr_minute, curr_second, curr_millisecond;
+    time_to_components(time_value, false, curr_year, curr_month, curr_day, curr_hour, curr_minute, curr_second, curr_millisecond);
+    
+    if (seconds != -1) curr_second = seconds;
+    if (milliseconds != -1) curr_millisecond = milliseconds;
+    
+    time_value = components_to_time(curr_year, curr_month, curr_day, curr_hour, minutes, curr_second, curr_millisecond, false);
+    timezone_offset_cached = false;
+    return time_value;
+}
+
+int64_t GoTSDate::setSeconds(int64_t seconds, int64_t milliseconds) {
+    int64_t curr_year, curr_month, curr_day, curr_hour, curr_minute, curr_second, curr_millisecond;
+    time_to_components(time_value, false, curr_year, curr_month, curr_day, curr_hour, curr_minute, curr_second, curr_millisecond);
+    
+    if (milliseconds != -1) curr_millisecond = milliseconds;
+    
+    time_value = components_to_time(curr_year, curr_month, curr_day, curr_hour, curr_minute, seconds, curr_millisecond, false);
+    timezone_offset_cached = false;
+    return time_value;
+}
+
+int64_t GoTSDate::setMilliseconds(int64_t milliseconds) {
+    int64_t curr_year, curr_month, curr_day, curr_hour, curr_minute, curr_second, curr_millisecond;
+    time_to_components(time_value, false, curr_year, curr_month, curr_day, curr_hour, curr_minute, curr_second, curr_millisecond);
+    
+    time_value = components_to_time(curr_year, curr_month, curr_day, curr_hour, curr_minute, curr_second, milliseconds, false);
+    timezone_offset_cached = false;
+    return time_value;
+}
+
+// UTC time setters implementation
+int64_t GoTSDate::setUTCFullYear(int64_t year, int64_t month, int64_t day) {
+    int64_t curr_year, curr_month, curr_day, curr_hour, curr_minute, curr_second, curr_millisecond;
+    time_to_components(time_value, true, curr_year, curr_month, curr_day, curr_hour, curr_minute, curr_second, curr_millisecond);
+    
+    if (month != -1) curr_month = month;
+    if (day != -1) curr_day = day;
+    
+    time_value = components_to_time(year, curr_month, curr_day, curr_hour, curr_minute, curr_second, curr_millisecond, true);
+    return time_value;
+}
+
+int64_t GoTSDate::setUTCMonth(int64_t month, int64_t day) {
+    int64_t curr_year, curr_month, curr_day, curr_hour, curr_minute, curr_second, curr_millisecond;
+    time_to_components(time_value, true, curr_year, curr_month, curr_day, curr_hour, curr_minute, curr_second, curr_millisecond);
+    
+    if (day != -1) curr_day = day;
+    
+    time_value = components_to_time(curr_year, month, curr_day, curr_hour, curr_minute, curr_second, curr_millisecond, true);
+    return time_value;
+}
+
+int64_t GoTSDate::setUTCDate(int64_t day) {
+    int64_t curr_year, curr_month, curr_day, curr_hour, curr_minute, curr_second, curr_millisecond;
+    time_to_components(time_value, true, curr_year, curr_month, curr_day, curr_hour, curr_minute, curr_second, curr_millisecond);
+    
+    time_value = components_to_time(curr_year, curr_month, day, curr_hour, curr_minute, curr_second, curr_millisecond, true);
+    return time_value;
+}
+
+int64_t GoTSDate::setUTCHours(int64_t hours, int64_t minutes, int64_t seconds, int64_t milliseconds) {
+    int64_t curr_year, curr_month, curr_day, curr_hour, curr_minute, curr_second, curr_millisecond;
+    time_to_components(time_value, true, curr_year, curr_month, curr_day, curr_hour, curr_minute, curr_second, curr_millisecond);
+    
+    if (minutes != -1) curr_minute = minutes;
+    if (seconds != -1) curr_second = seconds;
+    if (milliseconds != -1) curr_millisecond = milliseconds;
+    
+    time_value = components_to_time(curr_year, curr_month, curr_day, hours, curr_minute, curr_second, curr_millisecond, true);
+    return time_value;
+}
+
+int64_t GoTSDate::setUTCMinutes(int64_t minutes, int64_t seconds, int64_t milliseconds) {
+    int64_t curr_year, curr_month, curr_day, curr_hour, curr_minute, curr_second, curr_millisecond;
+    time_to_components(time_value, true, curr_year, curr_month, curr_day, curr_hour, curr_minute, curr_second, curr_millisecond);
+    
+    if (seconds != -1) curr_second = seconds;
+    if (milliseconds != -1) curr_millisecond = milliseconds;
+    
+    time_value = components_to_time(curr_year, curr_month, curr_day, curr_hour, minutes, curr_second, curr_millisecond, true);
+    return time_value;
+}
+
+int64_t GoTSDate::setUTCSeconds(int64_t seconds, int64_t milliseconds) {
+    int64_t curr_year, curr_month, curr_day, curr_hour, curr_minute, curr_second, curr_millisecond;
+    time_to_components(time_value, true, curr_year, curr_month, curr_day, curr_hour, curr_minute, curr_second, curr_millisecond);
+    
+    if (milliseconds != -1) curr_millisecond = milliseconds;
+    
+    time_value = components_to_time(curr_year, curr_month, curr_day, curr_hour, curr_minute, seconds, curr_millisecond, true);
+    return time_value;
+}
+
+int64_t GoTSDate::setUTCMilliseconds(int64_t milliseconds) {
+    int64_t curr_year, curr_month, curr_day, curr_hour, curr_minute, curr_second, curr_millisecond;
+    time_to_components(time_value, true, curr_year, curr_month, curr_day, curr_hour, curr_minute, curr_second, curr_millisecond);
+    
+    time_value = components_to_time(curr_year, curr_month, curr_day, curr_hour, curr_minute, curr_second, milliseconds, true);
+    return time_value;
+}
+
+// String formatting methods implementation
+GoTSString* GoTSDate::format_iso_string(int64_t time) {
+    GoTSDate temp(time);
+    int64_t year, month, day, hour, minute, second, millisecond;
+    temp.time_to_components(time, true, year, month, day, hour, minute, second, millisecond);
+    
+    char buffer[32];
+    snprintf(buffer, sizeof(buffer), "%04lld-%02lld-%02lldT%02lld:%02lld:%02lld.%03lldZ",
+             (long long)year, (long long)(month + 1), (long long)day,
+             (long long)hour, (long long)minute, (long long)second, (long long)millisecond);
+    
+    return new GoTSString(buffer);
+}
+
+GoTSString* GoTSDate::format_date_string(int64_t time, bool use_utc) {
+    GoTSDate temp(time);
+    int64_t year, month, day, hour, minute, second, millisecond;
+    temp.time_to_components(time, use_utc, year, month, day, hour, minute, second, millisecond);
+    
+    static const char* month_names[] = {
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+    };
+    
+    static const char* day_names[] = {
+        "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"
+    };
+    
+    int64_t day_of_week_val = GoTSDate::day_of_week(year, month, day);
+    
+    char buffer[64];
+    if (use_utc) {
+        snprintf(buffer, sizeof(buffer), "%s, %02lld %s %04lld %02lld:%02lld:%02lld GMT",
+                 day_names[day_of_week_val], (long long)day, month_names[month], (long long)year,
+                 (long long)hour, (long long)minute, (long long)second);
+    } else {
+        snprintf(buffer, sizeof(buffer), "%s %s %02lld %04lld %02lld:%02lld:%02lld GMT%+03lld%02lld",
+                 day_names[day_of_week_val], month_names[month], (long long)day, (long long)year,
+                 (long long)hour, (long long)minute, (long long)second,
+                 (long long)(-temp.getTimezoneOffset() / 60), (long long)(abs(temp.getTimezoneOffset()) % 60));
+    }
+    
+    return new GoTSString(buffer);
+}
+
+int64_t GoTSDate::parse_iso_string(const char* str) {
+    if (!str) return INT64_MIN; // Invalid date
+    
+    // Simple ISO 8601 parser - supports formats like:
+    // "2023-12-25T10:30:45.123Z"
+    // "2023-12-25T10:30:45Z"
+    // "2023-12-25"
+    
+    int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0, millisecond = 0;
+    
+    // Try to parse basic date part
+    int parsed = sscanf(str, "%d-%d-%d", &year, &month, &day);
+    if (parsed < 3) {
+        return INT64_MIN; // Invalid format
+    }
+    
+    // Try to parse time part if present
+    const char* time_part = strchr(str, 'T');
+    if (time_part) {
+        time_part++; // Skip 'T'
+        sscanf(time_part, "%d:%d:%d.%d", &hour, &minute, &second, &millisecond);
+    }
+    
+    // Convert to 0-based month for internal calculations
+    month--;
+    
+    // Create a temporary date object to use the conversion function
+    GoTSDate temp;
+    return temp.components_to_time(year, month, day, hour, minute, second, millisecond, true);
+}
+
+int64_t GoTSDate::parse(const char* dateString) {
+    return parse_iso_string(dateString);
+}
+
+// String conversion methods
+GoTSString* GoTSDate::toString() const {
+    return format_date_string(time_value, false);
+}
+
+GoTSString* GoTSDate::toISOString() const {
+    return format_iso_string(time_value);
+}
+
+GoTSString* GoTSDate::toUTCString() const {
+    return format_date_string(time_value, true);
+}
+
+GoTSString* GoTSDate::toDateString() const {
+    int64_t year, month, day, hour, minute, second, millisecond;
+    time_to_components(time_value, false, year, month, day, hour, minute, second, millisecond);
+    
+    static const char* month_names[] = {
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+    };
+    
+    static const char* day_names[] = {
+        "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"
+    };
+    
+    int64_t day_of_week_val = day_of_week(year, month, day);
+    
+    char buffer[32];
+    snprintf(buffer, sizeof(buffer), "%s %s %02lld %04lld",
+             day_names[day_of_week_val], month_names[month], (long long)day, (long long)year);
+    
+    return new GoTSString(buffer);
+}
+
+GoTSString* GoTSDate::toTimeString() const {
+    int64_t year, month, day, hour, minute, second, millisecond;
+    time_to_components(time_value, false, year, month, day, hour, minute, second, millisecond);
+    
+    char buffer[32];
+    snprintf(buffer, sizeof(buffer), "%02lld:%02lld:%02lld GMT%+03lld%02lld",
+             (long long)hour, (long long)minute, (long long)second,
+             (long long)(-getTimezoneOffset() / 60), (long long)(abs(getTimezoneOffset()) % 60));
+    
+    return new GoTSString(buffer);
+}
+
+GoTSString* GoTSDate::toLocaleDateString() const {
+    return toDateString(); // Simplified - same as toDateString for now
+}
+
+GoTSString* GoTSDate::toLocaleTimeString() const {
+    return toTimeString(); // Simplified - same as toTimeString for now
+}
+
+GoTSString* GoTSDate::toLocaleString() const {
+    return toString(); // Simplified - same as toString for now
+}
+
+GoTSString* GoTSDate::toJSON() const {
+    return toISOString(); // JSON format is ISO string
+}
+
+// C Runtime Functions for Date - called from JIT-generated code
+
+void* __date_create() {
+    return new GoTSDate();
+}
+
+void* __date_create_from_millis(int64_t millis) {
+    return new GoTSDate(millis);
+}
+
+void* __date_create_from_components(int64_t year, int64_t month, int64_t day,
+                                   int64_t hour, int64_t minute, int64_t second, int64_t millisecond) {
+    return new GoTSDate(year, month, day, hour, minute, second, millisecond);
+}
+
+void* __date_create_from_string(const char* dateString) {
+    return new GoTSDate(dateString);
+}
+
+void __date_destroy(void* date_ptr) {
+    if (date_ptr) {
+        delete static_cast<GoTSDate*>(date_ptr);
+    }
+}
+
+// Date getter methods
+int64_t __date_getTime(void* date_ptr) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->getTime();
+    }
+    return 0;
+}
+
+int64_t __date_getFullYear(void* date_ptr) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->getFullYear();
+    }
+    return 0;
+}
+
+int64_t __date_getMonth(void* date_ptr) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->getMonth();
+    }
+    return 0;
+}
+
+int64_t __date_getDate(void* date_ptr) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->getDate();
+    }
+    return 0;
+}
+
+int64_t __date_getDay(void* date_ptr) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->getDay();
+    }
+    return 0;
+}
+
+int64_t __date_getHours(void* date_ptr) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->getHours();
+    }
+    return 0;
+}
+
+int64_t __date_getMinutes(void* date_ptr) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->getMinutes();
+    }
+    return 0;
+}
+
+int64_t __date_getSeconds(void* date_ptr) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->getSeconds();
+    }
+    return 0;
+}
+
+int64_t __date_getMilliseconds(void* date_ptr) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->getMilliseconds();
+    }
+    return 0;
+}
+
+int64_t __date_getTimezoneOffset(void* date_ptr) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->getTimezoneOffset();
+    }
+    return 0;
+}
+
+// Date UTC getter methods
+int64_t __date_getUTCFullYear(void* date_ptr) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->getUTCFullYear();
+    }
+    return 0;
+}
+
+int64_t __date_getUTCMonth(void* date_ptr) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->getUTCMonth();
+    }
+    return 0;
+}
+
+int64_t __date_getUTCDate(void* date_ptr) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->getUTCDate();
+    }
+    return 0;
+}
+
+int64_t __date_getUTCDay(void* date_ptr) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->getUTCDay();
+    }
+    return 0;
+}
+
+int64_t __date_getUTCHours(void* date_ptr) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->getUTCHours();
+    }
+    return 0;
+}
+
+int64_t __date_getUTCMinutes(void* date_ptr) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->getUTCMinutes();
+    }
+    return 0;
+}
+
+int64_t __date_getUTCSeconds(void* date_ptr) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->getUTCSeconds();
+    }
+    return 0;
+}
+
+int64_t __date_getUTCMilliseconds(void* date_ptr) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->getUTCMilliseconds();
+    }
+    return 0;
+}
+
+// Date setter methods - with proper JavaScript-style argument handling
+int64_t __date_setTime(void* date_ptr, int64_t time) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->setTime(time);
+    }
+    return 0;
+}
+
+int64_t __date_setFullYear(void* date_ptr, int64_t year, int64_t month, int64_t day) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->setFullYear(year, month, day);
+    }
+    return 0;
+}
+
+int64_t __date_setMonth(void* date_ptr, int64_t month, int64_t day) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->setMonth(month, day);
+    }
+    return 0;
+}
+
+int64_t __date_setDate(void* date_ptr, int64_t day) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->setDate(day);
+    }
+    return 0;
+}
+
+int64_t __date_setHours(void* date_ptr, int64_t hours, int64_t minutes, int64_t seconds, int64_t milliseconds) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->setHours(hours, minutes, seconds, milliseconds);
+    }
+    return 0;
+}
+
+int64_t __date_setMinutes(void* date_ptr, int64_t minutes, int64_t seconds, int64_t milliseconds) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->setMinutes(minutes, seconds, milliseconds);
+    }
+    return 0;
+}
+
+int64_t __date_setSeconds(void* date_ptr, int64_t seconds, int64_t milliseconds) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->setSeconds(seconds, milliseconds);
+    }
+    return 0;
+}
+
+int64_t __date_setMilliseconds(void* date_ptr, int64_t milliseconds) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->setMilliseconds(milliseconds);
+    }
+    return 0;
+}
+
+// Date UTC setter methods
+int64_t __date_setUTCFullYear(void* date_ptr, int64_t year, int64_t month, int64_t day) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->setUTCFullYear(year, month, day);
+    }
+    return 0;
+}
+
+int64_t __date_setUTCMonth(void* date_ptr, int64_t month, int64_t day) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->setUTCMonth(month, day);
+    }
+    return 0;
+}
+
+int64_t __date_setUTCDate(void* date_ptr, int64_t day) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->setUTCDate(day);
+    }
+    return 0;
+}
+
+int64_t __date_setUTCHours(void* date_ptr, int64_t hours, int64_t minutes, int64_t seconds, int64_t milliseconds) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->setUTCHours(hours, minutes, seconds, milliseconds);
+    }
+    return 0;
+}
+
+int64_t __date_setUTCMinutes(void* date_ptr, int64_t minutes, int64_t seconds, int64_t milliseconds) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->setUTCMinutes(minutes, seconds, milliseconds);
+    }
+    return 0;
+}
+
+int64_t __date_setUTCSeconds(void* date_ptr, int64_t seconds, int64_t milliseconds) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->setUTCSeconds(seconds, milliseconds);
+    }
+    return 0;
+}
+
+int64_t __date_setUTCMilliseconds(void* date_ptr, int64_t milliseconds) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->setUTCMilliseconds(milliseconds);
+    }
+    return 0;
+}
+
+// Date string methods
+void* __date_toString(void* date_ptr) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->toString();
+    }
+    return new GoTSString("");
+}
+
+void* __date_toISOString(void* date_ptr) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->toISOString();
+    }
+    return new GoTSString("");
+}
+
+void* __date_toUTCString(void* date_ptr) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->toUTCString();
+    }
+    return new GoTSString("");
+}
+
+void* __date_toDateString(void* date_ptr) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->toDateString();
+    }
+    return new GoTSString("");
+}
+
+void* __date_toTimeString(void* date_ptr) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->toTimeString();
+    }
+    return new GoTSString("");
+}
+
+void* __date_toLocaleDateString(void* date_ptr) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->toLocaleDateString();
+    }
+    return new GoTSString("");
+}
+
+void* __date_toLocaleTimeString(void* date_ptr) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->toLocaleTimeString();
+    }
+    return new GoTSString("");
+}
+
+void* __date_toLocaleString(void* date_ptr) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->toLocaleString();
+    }
+    return new GoTSString("");
+}
+
+void* __date_toJSON(void* date_ptr) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->toJSON();
+    }
+    return new GoTSString("");
+}
+
+// Date static methods
+int64_t __date_parse(const char* dateString) {
+    return GoTSDate::parse(dateString);
+}
+
+int64_t __date_UTC(int64_t year, int64_t month, int64_t day, int64_t hour, int64_t minute, int64_t second, int64_t millisecond) {
+    return GoTSDate::UTC(year, month, day, hour, minute, second, millisecond);
+}
+
+// Date comparison and arithmetic
+int64_t __date_valueOf(void* date_ptr) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->valueOf();
+    }
+    return 0;
+}
+
+bool __date_equals(void* date1_ptr, void* date2_ptr) {
+    if (date1_ptr && date2_ptr) {
+        return *static_cast<GoTSDate*>(date1_ptr) == *static_cast<GoTSDate*>(date2_ptr);
+    }
+    return false;
+}
+
+int64_t __date_compare(void* date1_ptr, void* date2_ptr) {
+    if (date1_ptr && date2_ptr) {
+        GoTSDate* date1 = static_cast<GoTSDate*>(date1_ptr);
+        GoTSDate* date2 = static_cast<GoTSDate*>(date2_ptr);
+        
+        if (*date1 == *date2) return 0;
+        if (*date1 < *date2) return -1;
+        return 1;
+    }
+    return 0;
 }
 
 }

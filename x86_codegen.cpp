@@ -243,6 +243,8 @@ void X86CodeGen::emit_call(const std::string& label) {
             func_addr = (void*)__console_log_auto;
         } else if (label == "__console_log_string") {
             func_addr = (void*)__console_log_string;
+        } else if (label == "__console_log_object") {
+            func_addr = (void*)__console_log_object;
         } else if (label == "__console_time") {
             func_addr = (void*)__console_time;
         } else if (label == "__console_timeEnd") {
@@ -322,8 +324,12 @@ void X86CodeGen::emit_call(const std::string& label) {
             func_addr = (void*)__object_create;
         } else if (label == "__object_set_property") {
             func_addr = (void*)__object_set_property;
+        } else if (label == "__object_set_property_name") {
+            func_addr = (void*)__object_set_property_name;
         } else if (label == "__object_get_property") {
             func_addr = (void*)__object_get_property;
+        } else if (label == "__object_get_property_name") {
+            func_addr = (void*)__object_get_property_name;
         } else if (label == "__object_call_method") {
             func_addr = (void*)__object_call_method;
         } else if (label == "__object_destroy") {

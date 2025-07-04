@@ -1,2 +1,3 @@
 *.o
 gots
+node_modules/

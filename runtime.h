@@ -540,6 +540,139 @@ struct ObjectInstance {
     }
 };
 
+// High-Performance Date Implementation
+// JavaScript-compatible Date class with optimized internal representation
+class GoTSDate {
+private:
+    // Internal representation: milliseconds since Unix epoch (UTC)
+    // This matches JavaScript's Date internal representation for perfect compatibility
+    int64_t time_value;
+    
+    // Cached timezone offset to avoid repeated system calls
+    mutable int64_t cached_timezone_offset;
+    mutable bool timezone_offset_cached;
+    
+    // Internal helper methods
+    void update_timezone_cache() const;
+    void normalize_time_components(int64_t& year, int64_t& month, int64_t& day, 
+                                  int64_t& hour, int64_t& minute, int64_t& second) const;
+    int64_t days_since_epoch(int64_t year, int64_t month, int64_t day) const;
+    void time_to_components(int64_t time, bool use_utc, int64_t& year, int64_t& month, 
+                           int64_t& day, int64_t& hour, int64_t& minute, int64_t& second, 
+                           int64_t& millisecond) const;
+    int64_t components_to_time(int64_t year, int64_t month, int64_t day, 
+                              int64_t hour, int64_t minute, int64_t second, 
+                              int64_t millisecond, bool use_utc) const;
+    
+    // Static helper methods
+    static bool is_leap_year(int64_t year);
+    static int64_t days_in_month(int64_t year, int64_t month);
+    static int64_t day_of_week(int64_t year, int64_t month, int64_t day);
+    static int64_t parse_iso_string(const char* str);
+    static GoTSString* format_iso_string(int64_t time);
+    static GoTSString* format_date_string(int64_t time, bool use_utc);
+    
+public:
+    // Constructors
+    GoTSDate();
+    explicit GoTSDate(int64_t millis);
+    GoTSDate(int64_t year, int64_t month, int64_t day = 1, 
+             int64_t hour = 0, int64_t minute = 0, int64_t second = 0, 
+             int64_t millisecond = 0);
+    explicit GoTSDate(const char* dateString);
+    
+    // Copy constructor and assignment
+    GoTSDate(const GoTSDate& other) = default;
+    GoTSDate& operator=(const GoTSDate& other) = default;
+    
+    // Destructor
+    ~GoTSDate() = default;
+    
+    // Core time methods
+    int64_t getTime() const { return time_value; }
+    int64_t setTime(int64_t time);
+    int64_t valueOf() const { return time_value; }
+    
+    // Local time getters
+    int64_t getFullYear() const;
+    int64_t getMonth() const;
+    int64_t getDate() const;
+    int64_t getDay() const;
+    int64_t getHours() const;
+    int64_t getMinutes() const;
+    int64_t getSeconds() const;
+    int64_t getMilliseconds() const;
+    int64_t getTimezoneOffset() const;
+    
+    // UTC time getters
+    int64_t getUTCFullYear() const;
+    int64_t getUTCMonth() const;
+    int64_t getUTCDate() const;
+    int64_t getUTCDay() const;
+    int64_t getUTCHours() const;
+    int64_t getUTCMinutes() const;
+    int64_t getUTCSeconds() const;
+    int64_t getUTCMilliseconds() const;
+    
+    // Local time setters
+    int64_t setFullYear(int64_t year, int64_t month = -1, int64_t day = -1);
+    int64_t setMonth(int64_t month, int64_t day = -1);
+    int64_t setDate(int64_t day);
+    int64_t setHours(int64_t hours, int64_t minutes = -1, int64_t seconds = -1, int64_t milliseconds = -1);
+    int64_t setMinutes(int64_t minutes, int64_t seconds = -1, int64_t milliseconds = -1);
+    int64_t setSeconds(int64_t seconds, int64_t milliseconds = -1);
+    int64_t setMilliseconds(int64_t milliseconds);
+    
+    // UTC time setters
+    int64_t setUTCFullYear(int64_t year, int64_t month = -1, int64_t day = -1);
+    int64_t setUTCMonth(int64_t month, int64_t day = -1);
+    int64_t setUTCDate(int64_t day);
+    int64_t setUTCHours(int64_t hours, int64_t minutes = -1, int64_t seconds = -1, int64_t milliseconds = -1);
+    int64_t setUTCMinutes(int64_t minutes, int64_t seconds = -1, int64_t milliseconds = -1);
+    int64_t setUTCSeconds(int64_t seconds, int64_t milliseconds = -1);
+    int64_t setUTCMilliseconds(int64_t milliseconds);
+    
+    // String conversion methods
+    GoTSString* toString() const;
+    GoTSString* toISOString() const;
+    GoTSString* toUTCString() const;
+    GoTSString* toDateString() const;
+    GoTSString* toTimeString() const;
+    GoTSString* toLocaleDateString() const;
+    GoTSString* toLocaleTimeString() const;
+    GoTSString* toLocaleString() const;
+    GoTSString* toJSON() const;
+    
+    // Static methods
+    static int64_t now();
+    static int64_t parse(const char* dateString);
+    static int64_t UTC(int64_t year, int64_t month, int64_t day = 1, 
+                       int64_t hour = 0, int64_t minute = 0, int64_t second = 0, 
+                       int64_t millisecond = 0);
+    
+    // Comparison operators
+    bool operator==(const GoTSDate& other) const { return time_value == other.time_value; }
+    bool operator!=(const GoTSDate& other) const { return time_value != other.time_value; }
+    bool operator<(const GoTSDate& other) const { return time_value < other.time_value; }
+    bool operator<=(const GoTSDate& other) const { return time_value <= other.time_value; }
+    bool operator>(const GoTSDate& other) const { return time_value > other.time_value; }
+    bool operator>=(const GoTSDate& other) const { return time_value >= other.time_value; }
+    
+    // Arithmetic operators (returns new Date)
+    GoTSDate operator+(int64_t milliseconds) const;
+    GoTSDate operator-(int64_t milliseconds) const;
+    int64_t operator-(const GoTSDate& other) const;
+    
+    // In-place arithmetic
+    GoTSDate& operator+=(int64_t milliseconds);
+    GoTSDate& operator-=(int64_t milliseconds);
+    
+    // Validation
+    bool isValid() const;
+    static bool isValidDate(int64_t year, int64_t month, int64_t day);
+    static bool isValidTime(int64_t hour, int64_t minute, int64_t second, int64_t millisecond);
+};
+
 // Global object registry
 extern std::unordered_map<int64_t, std::unique_ptr<ObjectInstance>> object_registry;
 extern std::atomic<int64_t> next_object_id;
@@ -702,6 +835,79 @@ extern "C" {
     
     // Console logging optimized for strings
     void __console_log_string(void* string_ptr);
+    void __console_log_object(int64_t object_id);
+    
+    // Date/Time functions
+    int64_t __date_now();
+    
+    // Date class functions
+    void* __date_create();
+    void* __date_create_from_millis(int64_t millis);
+    void* __date_create_from_components(int64_t year, int64_t month, int64_t day,
+                                       int64_t hour, int64_t minute, int64_t second, int64_t millisecond);
+    void* __date_create_from_string(const char* dateString);
+    void __date_destroy(void* date_ptr);
+    
+    // Date getter methods
+    int64_t __date_getTime(void* date_ptr);
+    int64_t __date_getFullYear(void* date_ptr);
+    int64_t __date_getMonth(void* date_ptr);
+    int64_t __date_getDate(void* date_ptr);
+    int64_t __date_getDay(void* date_ptr);
+    int64_t __date_getHours(void* date_ptr);
+    int64_t __date_getMinutes(void* date_ptr);
+    int64_t __date_getSeconds(void* date_ptr);
+    int64_t __date_getMilliseconds(void* date_ptr);
+    int64_t __date_getTimezoneOffset(void* date_ptr);
+    
+    // Date UTC getter methods
+    int64_t __date_getUTCFullYear(void* date_ptr);
+    int64_t __date_getUTCMonth(void* date_ptr);
+    int64_t __date_getUTCDate(void* date_ptr);
+    int64_t __date_getUTCDay(void* date_ptr);
+    int64_t __date_getUTCHours(void* date_ptr);
+    int64_t __date_getUTCMinutes(void* date_ptr);
+    int64_t __date_getUTCSeconds(void* date_ptr);
+    int64_t __date_getUTCMilliseconds(void* date_ptr);
+    
+    // Date setter methods
+    int64_t __date_setTime(void* date_ptr, int64_t time);
+    int64_t __date_setFullYear(void* date_ptr, int64_t year, int64_t month, int64_t day);
+    int64_t __date_setMonth(void* date_ptr, int64_t month, int64_t day);
+    int64_t __date_setDate(void* date_ptr, int64_t day);
+    int64_t __date_setHours(void* date_ptr, int64_t hours, int64_t minutes, int64_t seconds, int64_t milliseconds);
+    int64_t __date_setMinutes(void* date_ptr, int64_t minutes, int64_t seconds, int64_t milliseconds);
+    int64_t __date_setSeconds(void* date_ptr, int64_t seconds, int64_t milliseconds);
+    int64_t __date_setMilliseconds(void* date_ptr, int64_t milliseconds);
+    
+    // Date UTC setter methods
+    int64_t __date_setUTCFullYear(void* date_ptr, int64_t year, int64_t month, int64_t day);
+    int64_t __date_setUTCMonth(void* date_ptr, int64_t month, int64_t day);
+    int64_t __date_setUTCDate(void* date_ptr, int64_t day);
+    int64_t __date_setUTCHours(void* date_ptr, int64_t hours, int64_t minutes, int64_t seconds, int64_t milliseconds);
+    int64_t __date_setUTCMinutes(void* date_ptr, int64_t minutes, int64_t seconds, int64_t milliseconds);
+    int64_t __date_setUTCSeconds(void* date_ptr, int64_t seconds, int64_t milliseconds);
+    int64_t __date_setUTCMilliseconds(void* date_ptr, int64_t milliseconds);
+    
+    // Date string methods
+    void* __date_toString(void* date_ptr);
+    void* __date_toISOString(void* date_ptr);
+    void* __date_toUTCString(void* date_ptr);
+    void* __date_toDateString(void* date_ptr);
+    void* __date_toTimeString(void* date_ptr);
+    void* __date_toLocaleDateString(void* date_ptr);
+    void* __date_toLocaleTimeString(void* date_ptr);
+    void* __date_toLocaleString(void* date_ptr);
+    void* __date_toJSON(void* date_ptr);
+    
+    // Date static methods
+    int64_t __date_parse(const char* dateString);
+    int64_t __date_UTC(int64_t year, int64_t month, int64_t day, int64_t hour, int64_t minute, int64_t second, int64_t millisecond);
+    
+    // Date comparison and arithmetic
+    int64_t __date_valueOf(void* date_ptr);
+    bool __date_equals(void* date1_ptr, void* date2_ptr);
+    int64_t __date_compare(void* date1_ptr, void* date2_ptr);
 }
 
 template<typename F, typename... Args>
