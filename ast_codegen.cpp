@@ -13,6 +13,13 @@ namespace gots {
 // Static member definition
 GoTSCompiler* ConstructorDecl::current_compiler_context = nullptr;
 
+// Global compiler context for function registration
+static GoTSCompiler* g_current_compiler = nullptr;
+
+void set_current_compiler(GoTSCompiler* compiler) {
+    g_current_compiler = compiler;
+}
+
 void NumberLiteral::generate_code(CodeGenerator& gen, TypeInference&) {
     gen.emit_mov_reg_imm(0, static_cast<int64_t>(value));
     result_type = DataType::NUMBER;  // JavaScript compatibility: number literals are number (float64)
@@ -56,6 +63,66 @@ void StringLiteral::generate_code(CodeGenerator& gen, TypeInference&) {
     
     // Result is now in RAX (pointer to GoTSString)
     result_type = DataType::STRING;
+}
+
+void RegexLiteral::generate_code(CodeGenerator& gen, TypeInference&) {
+    // Create a runtime regex object from pattern and flags
+    
+    // Store pattern string
+    static std::unordered_map<std::string, const char*> pattern_storage;
+    
+    // Check if we already have this pattern stored
+    auto pattern_it = pattern_storage.find(pattern);
+    const char* pattern_ptr;
+    if (pattern_it != pattern_storage.end()) {
+        pattern_ptr = pattern_it->second;
+    } else {
+        // Allocate permanent storage for this pattern
+        char* permanent_pattern = new char[pattern.length() + 1];
+        strcpy(permanent_pattern, pattern.c_str());
+        pattern_storage[pattern] = permanent_pattern;
+        pattern_ptr = permanent_pattern;
+    }
+    
+    // Store flags string
+    static std::unordered_map<std::string, const char*> flags_storage;
+    
+    auto flags_it = flags_storage.find(flags);
+    const char* flags_ptr;
+    if (flags_it != flags_storage.end()) {
+        flags_ptr = flags_it->second;
+    } else {
+        // Allocate permanent storage for this flags string
+        char* permanent_flags = new char[flags.length() + 1];
+        strcpy(permanent_flags, flags.c_str());
+        flags_storage[flags] = permanent_flags;
+        flags_ptr = permanent_flags;
+    }
+    
+    // CREATIVE FIX: Use a safer method to pass the pattern
+    // Instead of loading address directly, use a pattern ID lookup system
+    
+    // Store pattern in a safe global registry with integer IDs
+    static std::unordered_map<std::string, int> pattern_registry;
+    static int next_pattern_id = 1;
+    
+    int pattern_id;
+    auto registry_it = pattern_registry.find(pattern);
+    if (registry_it != pattern_registry.end()) {
+        pattern_id = registry_it->second;
+    } else {
+        pattern_id = next_pattern_id++;
+        pattern_registry[pattern] = pattern_id;
+    }
+    
+    // Pass pattern ID instead of pointer address to avoid assembly issues
+    gen.emit_mov_reg_imm(7, static_cast<int64_t>(pattern_id)); // RDI = pattern ID
+    
+    // Call modified runtime function that uses pattern ID
+    gen.emit_call("__regex_create_by_id");
+    
+    // Result is now in RAX (pointer to GoTSRegExp)
+    result_type = DataType::REGEX;
 }
 
 void Identifier::generate_code(CodeGenerator& gen, TypeInference& types) {
@@ -536,9 +603,24 @@ void FunctionCall::generate_code(CodeGenerator& gen, TypeInference& types) {
         }
         
         gen.emit_call(name);
-        // For function calls, assume they return a number (int64/float64) by default
-        // In a full implementation, this would use function signature information
-        result_type = DataType::NUMBER;
+        
+        // Look up function return type from compiler registry
+        if (g_current_compiler) {
+            Function* func = g_current_compiler->get_function(name);
+            if (func) {
+                result_type = func->return_type;
+                // std::cout << "DEBUG: Found function '" << name << "' with return type: " 
+                //           << static_cast<int>(result_type) << std::endl;
+            } else {
+                // Function not found in registry, assume NUMBER for built-in functions
+                result_type = DataType::NUMBER;
+                // std::cout << "DEBUG: Function '" << name << "' not found in registry, using default NUMBER type" << std::endl;
+            }
+        } else {
+            // No compiler context, fall back to default
+            result_type = DataType::NUMBER;
+            // std::cout << "DEBUG: No compiler context for function '" << name << "', using default NUMBER type" << std::endl;
+        }
         
         // Clean up stack if we pushed arguments
         if (arguments.size() > 6) {
@@ -564,6 +646,7 @@ void MethodCall::generate_code(CodeGenerator& gen, TypeInference& types) {
                 }
                 
                 arguments[i]->generate_code(gen, types);
+                
                 
                 // Check the type of each argument to call the appropriate console function
                 if (arguments[i]->result_type == DataType::TENSOR) {
@@ -747,6 +830,170 @@ void MethodCall::generate_code(CodeGenerator& gen, TypeInference& types) {
     }
 }
 
+void ExpressionMethodCall::generate_code(CodeGenerator& gen, TypeInference& types) {
+    // First, generate code for the object expression and get its result
+    object->generate_code(gen, types);
+    DataType object_type = object->result_type;
+    
+    // Handle different types of objects for method calls
+    if (object_type == DataType::STRING) {
+        // Handle string methods like match, replace, search, split
+        if (method_name == "match") {
+            // String.match() method - returns array of matches
+            // Save string pointer to stack location
+            gen.emit_mov_mem_reg(-8, 0); // Save string at RBP-8
+            
+            if (arguments.size() > 0) {
+                // Generate code for regex argument
+                arguments[0]->generate_code(gen, types);
+                
+                // Set up call: string_match(string_ptr, regex_ptr)
+                gen.emit_mov_reg_mem(7, -8);  // RDI = string pointer
+                gen.emit_mov_reg_reg(6, 0);   // RSI = regex pointer
+                gen.emit_call("__string_match");
+                result_type = DataType::TENSOR; // Array of matches
+            } else {
+                throw std::runtime_error("String.match() requires a regex argument");
+            }
+        } else if (method_name == "replace") {
+            // String.replace() method
+            gen.emit_mov_mem_reg(-8, 0); // Save string at RBP-8
+            
+            if (arguments.size() >= 2) {
+                // Generate code for pattern (regex or string)
+                arguments[0]->generate_code(gen, types);
+                gen.emit_mov_mem_reg(-16, 0); // Save pattern at RBP-16
+                
+                // Generate code for replacement string
+                arguments[1]->generate_code(gen, types);
+                
+                // Set up call: string_replace(string_ptr, pattern_ptr, replacement_ptr)
+                gen.emit_mov_reg_mem(7, -8);   // RDI = string pointer
+                gen.emit_mov_reg_mem(6, -16);  // RSI = pattern pointer
+                gen.emit_mov_reg_reg(2, 0);    // RDX = replacement pointer
+                gen.emit_call("__string_replace");
+                result_type = DataType::STRING;
+            } else {
+                throw std::runtime_error("String.replace() requires pattern and replacement arguments");
+            }
+        } else if (method_name == "search") {
+            // String.search() method - returns index of first match
+            gen.emit_mov_mem_reg(-8, 0); // Save string at RBP-8
+            
+            if (arguments.size() > 0) {
+                arguments[0]->generate_code(gen, types);
+                
+                gen.emit_mov_reg_mem(7, -8);  // RDI = string pointer  
+                gen.emit_mov_reg_reg(6, 0);   // RSI = regex pointer
+                gen.emit_call("__string_search");
+                result_type = DataType::NUMBER; // Index or -1
+            } else {
+                throw std::runtime_error("String.search() requires a regex argument");
+            }
+        } else if (method_name == "split") {
+            // String.split() method - returns array of strings
+            gen.emit_mov_mem_reg(-8, 0); // Save string at RBP-8
+            
+            if (arguments.size() > 0) {
+                arguments[0]->generate_code(gen, types);
+                
+                gen.emit_mov_reg_mem(7, -8);  // RDI = string pointer
+                gen.emit_mov_reg_reg(6, 0);   // RSI = delimiter/regex pointer
+                gen.emit_call("__string_split");
+                result_type = DataType::TENSOR; // Array of strings
+            } else {
+                throw std::runtime_error("String.split() requires a delimiter argument");
+            }
+        } else {
+            throw std::runtime_error("Unknown string method: " + method_name);
+        }
+    } else if (object_type == DataType::REGEX) {
+        // Handle regex methods like test, exec
+        if (method_name == "test") {
+            gen.emit_mov_mem_reg(-8, 0); // Save regex at RBP-8
+            
+            if (arguments.size() > 0) {
+                arguments[0]->generate_code(gen, types);
+                
+                gen.emit_mov_reg_mem(7, -8);  // RDI = regex pointer
+                gen.emit_mov_reg_reg(6, 0);   // RSI = string pointer
+                gen.emit_call("__regex_test");
+                result_type = DataType::BOOLEAN;
+            } else {
+                throw std::runtime_error("RegExp.test() requires a string argument");
+            }
+        } else if (method_name == "exec") {
+            gen.emit_mov_mem_reg(-8, 0); // Save regex at RBP-8
+            
+            if (arguments.size() > 0) {
+                arguments[0]->generate_code(gen, types);
+                
+                gen.emit_mov_reg_mem(7, -8);  // RDI = regex pointer
+                gen.emit_mov_reg_reg(6, 0);   // RSI = string pointer
+                gen.emit_call("__regex_exec");
+                result_type = DataType::TENSOR; // Match object/array
+            } else {
+                throw std::runtime_error("RegExp.exec() requires a string argument");
+            }
+        } else {
+            throw std::runtime_error("Unknown regex method: " + method_name);
+        }
+    } else if (object_type == DataType::TENSOR) {
+        // Handle array/tensor methods
+        if (method_name == "push") {
+            gen.emit_mov_mem_reg(-8, 0); // Save array pointer
+            
+            for (size_t i = 0; i < arguments.size(); i++) {
+                arguments[i]->generate_code(gen, types);
+                
+                gen.emit_mov_reg_mem(7, -8);  // RDI = array pointer
+                gen.emit_mov_reg_reg(6, 0);   // RSI = value to push
+                gen.emit_call("__array_push");
+            }
+            result_type = DataType::VOID;
+        } else if (method_name == "pop") {
+            gen.emit_mov_reg_reg(7, 0);   // RDI = array pointer
+            gen.emit_call("__array_pop");
+            result_type = DataType::NUMBER; // Popped value
+        } else {
+            throw std::runtime_error("Unknown array method: " + method_name);
+        }
+    } else {
+        // For other types, try a generic method call
+        // This is a fallback for custom objects or future types
+        gen.emit_mov_mem_reg(-8, 0); // Save object pointer
+        
+        // For now, we'll emit a placeholder call
+        // In a full implementation, this would do dynamic method lookup
+        std::string method_label = "__dynamic_method_" + method_name;
+        gen.emit_mov_reg_mem(7, -8);  // RDI = object pointer
+        
+        // Set up arguments
+        for (size_t i = 0; i < arguments.size() && i < 5; i++) {
+            arguments[i]->generate_code(gen, types);
+            gen.emit_mov_mem_reg(-(int64_t)(i + 2) * 8, 0); // Save to stack
+        }
+        
+        // Load arguments into registers (starting from RSI since RDI has object)
+        for (size_t i = 0; i < arguments.size() && i < 5; i++) {
+            switch (i) {
+                case 0: gen.emit_mov_reg_mem(6, -16); break;  // RSI
+                case 1: gen.emit_mov_reg_mem(2, -24); break;  // RDX
+                case 2: gen.emit_mov_reg_mem(1, -32); break;  // RCX
+                case 3: gen.emit_mov_reg_mem(8, -40); break;  // R8
+                case 4: gen.emit_mov_reg_mem(9, -48); break;  // R9
+            }
+        }
+        
+        gen.emit_call(method_label);
+        result_type = DataType::UNKNOWN; // Unknown return type for dynamic calls
+    }
+    
+    if (is_awaited) {
+        gen.emit_promise_await(0);
+    }
+}
+
 void ArrayLiteral::generate_code(CodeGenerator& gen, TypeInference& types) {
     // Allocate temporary variable for array pointer
     int64_t array_offset = types.allocate_variable("__temp_array_" + std::to_string(rand()), DataType::TENSOR);
@@ -907,6 +1154,37 @@ void TypedArrayLiteral::generate_code(CodeGenerator& gen, TypeInference& types) 
     result_type = array_type; // Set to the specific typed array type
 }
 
+void ArrayAccess::generate_code(CodeGenerator& gen, TypeInference& types) {
+    std::cout << "DEBUG: ArrayAccess::generate_code called" << std::endl;
+    // Generate code for the object expression
+    object->generate_code(gen, types);
+    
+    // Save object on stack
+    gen.emit_sub_reg_imm(4, 8);   // sub rsp, 8 (allocate stack space)
+    X86CodeGen* x86_gen = dynamic_cast<X86CodeGen*>(&gen);
+    if (x86_gen) {
+        x86_gen->emit_mov_mem_rsp_reg(0, 0);   // mov [rsp], rax (save object on stack)
+    }
+    
+    // Generate code for the index expression
+    index->generate_code(gen, types);
+    gen.emit_mov_reg_reg(6, 0); // Move index to RSI
+    
+    // Pop object into RDI
+    if (x86_gen) {
+        x86_gen->emit_mov_reg_mem_rsp(7, 0);   // mov rdi, [rsp] (load object from stack)
+    }
+    gen.emit_add_reg_imm(4, 8);   // add rsp, 8 (restore stack)
+    
+    // Call array access function
+    std::cout << "DEBUG: About to call __array_access" << std::endl;
+    gen.emit_call("__array_access");
+    std::cout << "DEBUG: Called __array_access" << std::endl;
+    
+    // Result is in RAX
+    result_type = DataType::UNKNOWN; // Array access returns unknown type for JavaScript compatibility
+}
+
 void Assignment::generate_code(CodeGenerator& gen, TypeInference& types) {
     if (value) {
         value->generate_code(gen, types);
@@ -1041,6 +1319,19 @@ void FunctionDecl::generate_code(CodeGenerator& gen, TypeInference& types) {
     if (!has_explicit_return) {
         gen.emit_mov_reg_imm(0, 0);  // mov rax, 0 (default return value)
         gen.emit_function_return();
+    }
+    
+    // Register function with compiler for return type lookup
+    if (g_current_compiler) {
+        Function func;
+        func.name = name;
+        func.return_type = (return_type == DataType::UNKNOWN) ? DataType::NUMBER : return_type;
+        func.parameters = parameters;
+        func.stack_size = 0; // Will be filled during execution
+        g_current_compiler->register_function(name, func);
+        
+        // std::cout << "DEBUG: Registered function '" << name << "' with return type: " 
+        //           << static_cast<int>(func.return_type) << std::endl;
     }
 }
 
@@ -1465,6 +1756,89 @@ void PropertyAccess::generate_code(CodeGenerator& gen, TypeInference& types) {
                       << object_name << "." << property_name << std::endl;
             result_type = DataType::UNKNOWN; // TODO: Get actual property type
         }
+    }
+}
+
+void ExpressionPropertyAccess::generate_code(CodeGenerator& gen, TypeInference& types) {
+    // Generate code for the object expression first
+    object->generate_code(gen, types);
+    DataType object_type = object->result_type;
+    
+    // Handle different types of objects for property access
+    if (object_type == DataType::STRING) {
+        // Handle string properties like length
+        if (property_name == "length") {
+            // String object is now in RAX, get its length
+            gen.emit_mov_reg_reg(7, 0);  // RDI = string pointer
+            gen.emit_call("__string_length");
+            result_type = DataType::NUMBER;
+        } else {
+            throw std::runtime_error("Unknown string property: " + property_name);
+        }
+    } else if (object_type == DataType::TENSOR) {
+        // Handle array properties like length, and special match result properties
+        if (property_name == "length") {
+            gen.emit_mov_reg_reg(7, 0);  // RDI = array pointer
+            gen.emit_call("__array_size");
+            result_type = DataType::NUMBER;
+        } else if (property_name == "index") {
+            // JavaScript match result property - lazily computed
+            gen.emit_mov_reg_reg(7, 0);  // RDI = match array pointer
+            gen.emit_call("__match_result_get_index");
+            result_type = DataType::NUMBER;
+        } else if (property_name == "input") {
+            // JavaScript match result property - lazily computed
+            gen.emit_mov_reg_reg(7, 0);  // RDI = match array pointer
+            gen.emit_call("__match_result_get_input");
+            result_type = DataType::STRING;
+        } else if (property_name == "groups") {
+            // JavaScript match result property - always undefined for basic matches
+            gen.emit_mov_reg_reg(7, 0);  // RDI = match array pointer
+            gen.emit_call("__match_result_get_groups");
+            result_type = DataType::UNKNOWN; // undefined
+        } else {
+            throw std::runtime_error("Unknown array property: " + property_name);
+        }
+    } else if (object_type == DataType::REGEX) {
+        // Handle regex properties
+        if (property_name == "source") {
+            // Get regex pattern as string
+            gen.emit_mov_reg_reg(7, 0);  // RDI = regex pointer
+            gen.emit_call("__regex_get_source");
+            result_type = DataType::STRING;
+        } else if (property_name == "global") {
+            gen.emit_mov_reg_reg(7, 0);  // RDI = regex pointer
+            gen.emit_call("__regex_get_global");
+            result_type = DataType::BOOLEAN;
+        } else if (property_name == "ignoreCase") {
+            gen.emit_mov_reg_reg(7, 0);  // RDI = regex pointer
+            gen.emit_call("__regex_get_ignore_case");
+            result_type = DataType::BOOLEAN;
+        } else {
+            throw std::runtime_error("Unknown regex property: " + property_name);
+        }
+    } else {
+        // For other types or custom objects, use dynamic property access
+        gen.emit_mov_mem_reg(-8, 0); // Save object pointer on stack
+        
+        // Create a pooled string for the property name
+        static std::unordered_map<std::string, const char*> property_name_pool;
+        
+        auto it = property_name_pool.find(property_name);
+        if (it == property_name_pool.end()) {
+            char* name_copy = new char[property_name.length() + 1];
+            strcpy(name_copy, property_name.c_str());
+            property_name_pool[property_name] = name_copy;
+            it = property_name_pool.find(property_name);
+        }
+        
+        const char* property_name_ptr = it->second;
+        
+        // Call dynamic property getter
+        gen.emit_mov_reg_mem(7, -8);  // RDI = object pointer
+        gen.emit_mov_reg_imm(6, reinterpret_cast<int64_t>(property_name_ptr)); // RSI = property name
+        gen.emit_call("__dynamic_get_property");
+        result_type = DataType::UNKNOWN; // Unknown return type for dynamic access
     }
 }
 

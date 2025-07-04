@@ -10,7 +10,7 @@
 namespace gots {
 
 enum class TokenType {
-    IDENTIFIER, NUMBER, STRING, BOOLEAN,
+    IDENTIFIER, NUMBER, STRING, BOOLEAN, REGEX,
     FUNCTION, GO, AWAIT, LET, VAR, CONST,
     IF, FOR, WHILE, RETURN,
     SWITCH, CASE, DEFAULT, BREAK,
@@ -34,7 +34,7 @@ enum class DataType {
     INT8, INT16, INT32, INT64,
     UINT8, UINT16, UINT32, UINT64,
     FLOAT32, FLOAT64,
-    BOOLEAN, STRING,
+    BOOLEAN, STRING, REGEX,
     TENSOR, PROMISE, FUNCTION,
     CLASS_INSTANCE,  // For class instances
     NUMBER = FLOAT64,  // JavaScript compatibility: number is float64
@@ -293,6 +293,13 @@ struct StringLiteral : ExpressionNode {
     void generate_code(CodeGenerator& gen, TypeInference& types) override;
 };
 
+struct RegexLiteral : ExpressionNode {
+    std::string pattern;
+    std::string flags;
+    RegexLiteral(const std::string& p, const std::string& f = "") : pattern(p), flags(f) {}
+    void generate_code(CodeGenerator& gen, TypeInference& types) override;
+};
+
 struct Identifier : ExpressionNode {
     std::string name;
     Identifier(const std::string& n) : name(n) {}
@@ -334,6 +341,17 @@ struct MethodCall : ExpressionNode {
     void generate_code(CodeGenerator& gen, TypeInference& types) override;
 };
 
+struct ExpressionMethodCall : ExpressionNode {
+    std::unique_ptr<ExpressionNode> object;
+    std::string method_name;
+    std::vector<std::unique_ptr<ExpressionNode>> arguments;
+    bool is_goroutine = false;
+    bool is_awaited = false;
+    ExpressionMethodCall(std::unique_ptr<ExpressionNode> obj, const std::string& method) 
+        : object(std::move(obj)), method_name(method) {}
+    void generate_code(CodeGenerator& gen, TypeInference& types) override;
+};
+
 struct ArrayLiteral : ExpressionNode {
     std::vector<std::unique_ptr<ExpressionNode>> elements;
     ArrayLiteral() {}
@@ -350,6 +368,14 @@ struct TypedArrayLiteral : ExpressionNode {
     std::vector<std::unique_ptr<ExpressionNode>> elements;
     DataType array_type;
     TypedArrayLiteral(DataType type) : array_type(type) {}
+    void generate_code(CodeGenerator& gen, TypeInference& types) override;
+};
+
+struct ArrayAccess : ExpressionNode {
+    std::unique_ptr<ExpressionNode> object;
+    std::unique_ptr<ExpressionNode> index;
+    ArrayAccess(std::unique_ptr<ExpressionNode> obj, std::unique_ptr<ExpressionNode> idx)
+        : object(std::move(obj)), index(std::move(idx)) {}
     void generate_code(CodeGenerator& gen, TypeInference& types) override;
 };
 
@@ -493,6 +519,14 @@ struct PropertyAccess : ExpressionNode {
     void generate_code(CodeGenerator& gen, TypeInference& types) override;
 };
 
+struct ExpressionPropertyAccess : ExpressionNode {
+    std::unique_ptr<ExpressionNode> object;
+    std::string property_name;
+    ExpressionPropertyAccess(std::unique_ptr<ExpressionNode> obj, const std::string& prop) 
+        : object(std::move(obj)), property_name(prop) {}
+    void generate_code(CodeGenerator& gen, TypeInference& types) override;
+};
+
 struct ThisExpression : ExpressionNode {
     ThisExpression() {}
     void generate_code(CodeGenerator& gen, TypeInference& types) override;
@@ -568,6 +602,7 @@ private:
     Token make_number();
     Token make_string();
     Token make_identifier();
+    Token make_regex();
     
 public:
     Lexer(const std::string& src) : source(src) {}
@@ -707,10 +742,19 @@ private:
     
 public:
     
+    // Function management
+    void register_function(const std::string& name, const Function& func);
+    Function* get_function(const std::string& name);
+    bool is_function_defined(const std::string& name) const;
+    
     // Class management
     void register_class(const ClassInfo& class_info);
     ClassInfo* get_class(const std::string& class_name);
     bool is_class_defined(const std::string& class_name);
+    
 };
+
+// Global function for setting compiler context during AST generation
+void set_current_compiler(GoTSCompiler* compiler);
 
 }

@@ -266,50 +266,69 @@ std::unique_ptr<ExpressionNode> Parser::parse_call() {
                     continue; // Continue to check for more chained calls
                 }
                 
-                std::string object_name;
-                if (identifier) {
-                    object_name = identifier->name;
-                } else if (this_expr) {
-                    object_name = "this";
+                // Handle method calls on identifiers and 'this' using the original MethodCall
+                if (identifier || this_expr) {
+                    std::string object_name;
+                    if (identifier) {
+                        object_name = identifier->name;
+                    } else {
+                        object_name = "this";
+                    }
+                    
+                    expr.release();
+                    
+                    // Parse the method call like a function call
+                    advance(); // consume LPAREN
+                    auto method_call = std::make_unique<MethodCall>(object_name, property);
+                    
+                    if (!check(TokenType::RPAREN)) {
+                        do {
+                            method_call->arguments.push_back(parse_expression());
+                        } while (match(TokenType::COMMA));
+                    }
+                    
+                    if (!match(TokenType::RPAREN)) {
+                        throw std::runtime_error("Expected ')' after method arguments");
+                    }
+                    
+                    expr = std::move(method_call);
                 } else {
-                    throw std::runtime_error("Invalid method call");
+                    // Handle method calls on any expression using ExpressionMethodCall
+                    auto object_expr = std::move(expr);
+                    
+                    // Parse the method call like a function call
+                    advance(); // consume LPAREN
+                    auto expr_method_call = std::make_unique<ExpressionMethodCall>(std::move(object_expr), property);
+                    
+                    if (!check(TokenType::RPAREN)) {
+                        do {
+                            expr_method_call->arguments.push_back(parse_expression());
+                        } while (match(TokenType::COMMA));
+                    }
+                    
+                    if (!match(TokenType::RPAREN)) {
+                        throw std::runtime_error("Expected ')' after method arguments");
+                    }
+                    
+                    expr = std::move(expr_method_call);
                 }
-                
-                expr.release();
-                
-                // Parse the method call like a function call
-                advance(); // consume LPAREN
-                auto method_call = std::make_unique<MethodCall>(object_name, property);
-                
-                if (!check(TokenType::RPAREN)) {
-                    do {
-                        method_call->arguments.push_back(parse_expression());
-                    } while (match(TokenType::COMMA));
-                }
-                
-                if (!match(TokenType::RPAREN)) {
-                    throw std::runtime_error("Expected ')' after method arguments");
-                }
-                
-                expr = std::move(method_call);
             } else {
                 // This is property access, not a method call
                 auto identifier = dynamic_cast<Identifier*>(expr.get());
                 auto this_expr = dynamic_cast<ThisExpression*>(expr.get());
                 auto super_call = dynamic_cast<SuperCall*>(expr.get());
                 
-                if (identifier) {
-                    std::string object_name = identifier->name;
-                    expr.release();
-                    expr = std::make_unique<PropertyAccess>(object_name, property);
-                } else if (this_expr) {
+                if (this_expr) {
                     expr.release();
                     expr = std::make_unique<PropertyAccess>("this", property);
                 } else if (super_call) {
                     expr.release();
                     expr = std::make_unique<PropertyAccess>("super", property);
                 } else {
-                    throw std::runtime_error("Invalid property access");
+                    // Handle property access on any expression using ExpressionPropertyAccess
+                    // This includes regular identifiers like "result.length"
+                    auto object_expr = std::move(expr);
+                    expr = std::make_unique<ExpressionPropertyAccess>(std::move(object_expr), property);
                 }
             }
         } else if (match(TokenType::INCREMENT)) {
@@ -332,6 +351,16 @@ std::unique_ptr<ExpressionNode> Parser::parse_call() {
             std::string var_name = identifier->name;
             expr.release();
             expr = std::make_unique<PostfixDecrement>(var_name);
+        } else if (match(TokenType::LBRACKET)) {
+            // Handle array access
+            auto object_expr = std::move(expr);
+            auto index_expr = parse_expression();
+            
+            if (!match(TokenType::RBRACKET)) {
+                throw std::runtime_error("Expected ']' after array index");
+            }
+            
+            expr = std::make_unique<ArrayAccess>(std::move(object_expr), std::move(index_expr));
         } else {
             break;
         }
@@ -348,6 +377,24 @@ std::unique_ptr<ExpressionNode> Parser::parse_primary() {
     
     if (match(TokenType::STRING)) {
         return std::make_unique<StringLiteral>(tokens[pos - 1].value);
+    }
+    
+    if (match(TokenType::REGEX)) {
+        std::string regex_value = tokens[pos - 1].value;
+        
+        // Parse pattern and flags (separated by |)
+        std::string pattern;
+        std::string flags;
+        
+        size_t separator_pos = regex_value.find('|');
+        if (separator_pos != std::string::npos) {
+            pattern = regex_value.substr(0, separator_pos);
+            flags = regex_value.substr(separator_pos + 1);
+        } else {
+            pattern = regex_value;
+        }
+        
+        return std::make_unique<RegexLiteral>(pattern, flags);
     }
     
     if (match(TokenType::BOOLEAN)) {

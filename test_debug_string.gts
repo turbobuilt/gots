@@ -1,1 +1,0 @@
-console.log("Test: " + 5 + " and " + 10)

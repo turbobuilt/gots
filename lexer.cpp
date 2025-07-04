@@ -1,5 +1,6 @@
 #include "compiler.h"
 #include <cctype>
+#include <stdexcept>
 #include <unordered_map>
 
 namespace gots {
@@ -157,6 +158,55 @@ Token Lexer::make_identifier() {
     return {type, identifier, start_line, start_column};
 }
 
+Token Lexer::make_regex() {
+    std::string pattern;
+    int start_line = line, start_column = column;
+    advance(); // skip opening '/'
+    
+    while (current_char() != '/' && current_char() != '\0') {
+        if (current_char() == '\\') {
+            pattern += current_char();
+            advance();
+            if (current_char() != '\0') {
+                pattern += current_char();
+                advance();
+            }
+        } else if (current_char() == '\n') {
+            // Regex cannot span multiple lines
+            throw std::runtime_error("Unterminated regex literal");
+        } else {
+            pattern += current_char();
+            advance();
+        }
+    }
+    
+    if (current_char() != '/') {
+        throw std::runtime_error("Unterminated regex literal at position " + std::to_string(pos) + 
+                                 ", found: '" + std::string(1, current_char()) + "'");
+    }
+    advance(); // skip closing '/'
+    
+    // Parse flags
+    std::string flags;
+    while (std::isalpha(current_char())) {
+        char flag = current_char();
+        if (flag == 'g' || flag == 'i' || flag == 'm' || flag == 's' || flag == 'u' || flag == 'y') {
+            flags += flag;
+            advance();
+        } else {
+            break;
+        }
+    }
+    
+    // Combine pattern and flags into value
+    std::string value = pattern;
+    if (!flags.empty()) {
+        value += "|" + flags; // Use | as separator
+    }
+    
+    return {TokenType::REGEX, value, start_line, start_column};
+}
+
 std::vector<Token> Lexer::tokenize() {
     std::vector<Token> tokens;
     
@@ -257,13 +307,44 @@ std::vector<Token> Lexer::tokenize() {
                     }
                     break;
                 case '/':
-                    advance();
-                    if (current_char() == '=') {
-                        type = TokenType::DIVIDE_ASSIGN;
-                        value = "/=";
+                    // Check if this could be a regex literal
+                    // Regex literals can appear after: =, (, [, {, ;, :, !, &, |, ?, +, -, *, /, %, ^, ~, <, >, comma, return, throw
+                    // and at the start of statements
+                    if (tokens.empty() || 
+                        tokens.back().type == TokenType::ASSIGN ||
+                        tokens.back().type == TokenType::LPAREN ||
+                        tokens.back().type == TokenType::LBRACKET ||
+                        tokens.back().type == TokenType::LBRACE ||
+                        tokens.back().type == TokenType::SEMICOLON ||
+                        tokens.back().type == TokenType::COLON ||
+                        tokens.back().type == TokenType::NOT ||
+                        tokens.back().type == TokenType::AND ||
+                        tokens.back().type == TokenType::OR ||
+                        tokens.back().type == TokenType::QUESTION ||
+                        tokens.back().type == TokenType::PLUS ||
+                        tokens.back().type == TokenType::MINUS ||
+                        tokens.back().type == TokenType::MULTIPLY ||
+                        tokens.back().type == TokenType::DIVIDE ||
+                        tokens.back().type == TokenType::MODULO ||
+                        tokens.back().type == TokenType::LESS ||
+                        tokens.back().type == TokenType::GREATER ||
+                        tokens.back().type == TokenType::EQUAL ||
+                        tokens.back().type == TokenType::NOT_EQUAL ||
+                        tokens.back().type == TokenType::COMMA ||
+                        tokens.back().type == TokenType::RETURN) {
+                        // This is likely a regex literal
+                        tokens.push_back(make_regex());
+                        continue;
                     } else {
-                        pos--; column--;
-                        type = TokenType::DIVIDE;
+                        // This is likely a division operator
+                        advance();
+                        if (current_char() == '=') {
+                            type = TokenType::DIVIDE_ASSIGN;
+                            value = "/=";
+                        } else {
+                            pos--; column--;
+                            type = TokenType::DIVIDE;
+                        }
                     }
                     break;
                 case '%':

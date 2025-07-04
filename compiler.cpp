@@ -44,6 +44,9 @@ void GoTSCompiler::compile(const std::string& source) {
         // Set the compiler context for constructor code generation
         ConstructorDecl::set_compiler_context(this);
         
+        // Set the compiler context for function registration
+        set_current_compiler(this);
+        
         // First, register all class declarations and generate default constructors if needed
         for (const auto& node : ast) {
             if (auto class_decl = dynamic_cast<ClassDecl*>(node.get())) {
@@ -257,6 +260,8 @@ ClassInfo* GoTSCompiler::get_class(const std::string& class_name) {
 bool GoTSCompiler::is_class_defined(const std::string& class_name) {
     return classes.find(class_name) != classes.end();
 }
+
+// Function management methods
 
 // Module system methods
 std::string GoTSCompiler::resolve_module_path(const std::string& module_path, const std::string& current_file) {
@@ -566,6 +571,23 @@ void GoTSCompiler::compile_file(const std::string& file_path) {
     file.close();
     
     compile(source);
+}
+
+// Function management methods
+void GoTSCompiler::register_function(const std::string& name, const Function& func) {
+    functions[name] = func;
+}
+
+Function* GoTSCompiler::get_function(const std::string& name) {
+    auto it = functions.find(name);
+    if (it != functions.end()) {
+        return &it->second;
+    }
+    return nullptr;
+}
+
+bool GoTSCompiler::is_function_defined(const std::string& name) const {
+    return functions.find(name) != functions.end();
 }
 
 }

@@ -259,8 +259,22 @@ void X86CodeGen::emit_call(const std::string& label) {
             func_addr = (void*)__array_pop;
         } else if (label == "__array_size") {
             func_addr = (void*)__array_size;
+        } else if (label == "__array_access") {
+            func_addr = (void*)__array_access;
         } else if (label == "__array_data") {
             func_addr = (void*)__array_data;
+        } else if (label == "__string_match") {
+            func_addr = (void*)__string_match;
+        } else if (label == "__string_replace") {
+            func_addr = (void*)__string_replace;
+        } else if (label == "__string_search") {
+            func_addr = (void*)__string_search;
+        } else if (label == "__match_result_get_index") {
+            func_addr = (void*)__match_result_get_index;
+        } else if (label == "__match_result_get_input") {
+            func_addr = (void*)__match_result_get_input;
+        } else if (label == "__match_result_get_groups") {
+            func_addr = (void*)__match_result_get_groups;
         } else if (label == "__goroutine_spawn") {
             func_addr = (void*)__goroutine_spawn;
         } else if (label == "__promise_await") {
@@ -375,6 +389,8 @@ void X86CodeGen::emit_call(const std::string& label) {
             func_addr = (void*)__string_intern;
         } else if (label == "__string_pool_cleanup") {
             func_addr = (void*)__string_pool_cleanup;
+        } else if (label == "__regex_create_by_id") {
+            func_addr = (void*)__regex_create_by_id;
         }
         
         if (func_addr) {

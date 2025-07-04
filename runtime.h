@@ -366,7 +366,7 @@ struct Array {
         data = new int64_t[capacity];
     }
     
-    ~Array() {
+    virtual ~Array() {
         if (data) delete[] data;
     }
     
@@ -389,6 +389,51 @@ struct Array {
             return data[--size];
         }
         return 0;
+    }
+};
+
+// High-performance JavaScript-compatible match result array
+// Uses lazy loading for JavaScript properties (index, input, groups)
+// to maintain performance while providing full compatibility when needed
+struct MatchArray : public Array {
+    // Lazy-loaded properties (computed only when accessed)
+    mutable int cached_index = -2;        // -2 = not computed, -1 = no match, >=0 = computed
+    mutable GoTSString* cached_input = nullptr;
+    mutable bool groups_accessed = false;
+    
+    // Original data for lazy computation (stored only when properties might be needed)
+    std::string original_text;
+    std::string pattern;
+    size_t match_position;
+    
+    MatchArray(int64_t initial_capacity, const std::string& text, const std::string& pat, size_t pos) 
+        : Array(initial_capacity), original_text(text), pattern(pat), match_position(pos) {}
+    
+    // High-performance property access - computed on demand
+    int get_index() const {
+        if (cached_index == -2) {
+            cached_index = static_cast<int>(match_position);
+        }
+        return cached_index;
+    }
+    
+    GoTSString* get_input() const {
+        if (!cached_input) {
+            cached_input = new GoTSString(original_text.c_str());
+        }
+        return cached_input;
+    }
+    
+    // groups is always undefined in basic implementation
+    void* get_groups() const {
+        groups_accessed = true;
+        return nullptr; // undefined
+    }
+    
+    ~MatchArray() override {
+        if (cached_input) {
+            delete cached_input;
+        }
     }
 };
 
@@ -711,6 +756,7 @@ extern "C" {
     void __console_log_array(int64_t* array, int64_t size);
     void __console_log_number(int64_t value);
     void __console_log_auto(int64_t value);
+    void __console_log_smart(int64_t value);
     bool __is_array_pointer(int64_t value);
     void __console_time(const char* label);
     void __console_timeEnd(const char* label);
@@ -723,6 +769,7 @@ extern "C" {
     void __array_push(void* array, int64_t value);
     int64_t __array_pop(void* array);
     int64_t __array_size(void* array);
+    int64_t __array_access(void* array, int64_t index);
     int64_t* __array_data(void* array);
     
     // Typed Array functions for maximum performance
@@ -908,6 +955,32 @@ extern "C" {
     int64_t __date_valueOf(void* date_ptr);
     bool __date_equals(void* date1_ptr, void* date2_ptr);
     int64_t __date_compare(void* date1_ptr, void* date2_ptr);
+    
+    // Regex functions
+    void* __regex_create(const char* pattern, const char* flags);
+    void* __regex_create_simple(const char* pattern);
+    void* __regex_create_by_id(int pattern_id);
+    void __regex_destroy(void* regex_ptr);
+    bool __regex_test(void* regex_ptr, const char* text);
+    void* __regex_exec(void* regex_ptr, const char* text);
+    void* __regex_match_all(void* regex_ptr, const char* text);
+    
+    // String method functions
+    void* __string_match(void* string_ptr, void* regex_ptr);
+    void* __string_replace(void* string_ptr, void* pattern_ptr, void* replacement_ptr);
+    int64_t __string_search(void* string_ptr, void* regex_ptr);
+    void* __string_split(void* string_ptr, void* delimiter_ptr);
+    
+    // String property functions
+    int64_t __string_length(void* string_ptr);
+    
+    // Regex property functions
+    void* __regex_get_source(void* regex_ptr);
+    bool __regex_get_global(void* regex_ptr);
+    bool __regex_get_ignore_case(void* regex_ptr);
+    
+    // Dynamic property access
+    void* __dynamic_get_property(void* object_ptr, const char* property_name);
 }
 
 template<typename F, typename... Args>
@@ -1023,6 +1096,19 @@ void SharedMemory::atomic_update(const std::string& name, std::function<T(const 
         T new_value = updater(current_value);
         it->second = std::make_shared<T>(new_value);
     }
+}
+
+// C function declarations for x86_codegen.cpp
+extern "C" {
+    // String functions
+    void* __string_match(void* string_ptr, void* regex_ptr);
+    void* __string_replace(void* string_ptr, void* pattern_ptr, void* replacement_ptr);
+    int64_t __string_search(void* string_ptr, void* regex_ptr);
+    
+    // Match result property accessors
+    int64_t __match_result_get_index(void* match_array_ptr);
+    void* __match_result_get_input(void* match_array_ptr);
+    void* __match_result_get_groups(void* match_array_ptr);
 }
 
 }

@@ -3,7 +3,7 @@ CXXFLAGS = -std=c++17 -O3 -Wall -Wextra -pthread
 LDFLAGS = -pthread
 
 SRCDIR = .
-SOURCES = compiler.cpp lexer.cpp parser.cpp type_inference.cpp x86_codegen.cpp wasm_codegen.cpp ast_codegen.cpp runtime.cpp lexical_scope.cpp simple_main.cpp
+SOURCES = compiler.cpp lexer.cpp parser.cpp type_inference.cpp x86_codegen.cpp wasm_codegen.cpp ast_codegen.cpp runtime.cpp lexical_scope.cpp regex.cpp simple_main.cpp
 OBJECTS = $(SOURCES:.cpp=.o)
 TARGET = gots
 
@@ -56,4 +56,5 @@ wasm_codegen.o: compiler.h
 ast_codegen.o: compiler.h
 runtime.o: runtime.h lexical_scope.h
 lexical_scope.o: lexical_scope.h compiler.h
+regex.o: regex.h runtime.h
 main.o: compiler.h tensor.h promise.h runtime.h

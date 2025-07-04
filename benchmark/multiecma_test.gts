@@ -57,3 +57,5 @@ console.log("data is", data)
 for each key, value in data {
     console.log("key is", key, "value is", value)
 }
+
+console.log("regex", "bobby brown".match(/bob/))
