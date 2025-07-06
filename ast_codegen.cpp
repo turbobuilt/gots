@@ -1,5 +1,6 @@
 #include "compiler.h"
 #include "runtime.h"
+#include "runtime_object.h"
 #include <iostream>
 #include <unordered_map>
 #include <cstring>
@@ -9,6 +10,9 @@
 static std::unordered_map<std::string, double> global_imported_constants;
 
 namespace gots {
+
+// Forward declarations for function ID registry
+void __register_function_id(int64_t function_id, const std::string& function_name);
 
 // Static member definition
 GoTSCompiler* ConstructorDecl::current_compiler_context = nullptr;
@@ -115,10 +119,12 @@ void RegexLiteral::generate_code(CodeGenerator& gen, TypeInference&) {
         pattern_registry[pattern] = pattern_id;
     }
     
-    // Pass pattern ID instead of pointer address to avoid assembly issues
-    gen.emit_mov_reg_imm(7, static_cast<int64_t>(pattern_id)); // RDI = pattern ID
+    // Register the pattern with the runtime first
+    gen.emit_mov_reg_imm(7, reinterpret_cast<int64_t>(pattern_ptr)); // RDI = pattern string (permanent storage)
+    gen.emit_call("__register_regex_pattern");
     
-    // Call modified runtime function that uses pattern ID
+    // The function returns the pattern ID in RAX, use it to create the regex
+    gen.emit_mov_reg_reg(7, 0); // RDI = RAX (pattern ID returned)
     gen.emit_call("__regex_create_by_id");
     
     // Result is now in RAX (pointer to GoTSRegExp)
@@ -126,6 +132,15 @@ void RegexLiteral::generate_code(CodeGenerator& gen, TypeInference&) {
 }
 
 void Identifier::generate_code(CodeGenerator& gen, TypeInference& types) {
+    // SPECIAL CASE: Handle "runtime" global object
+    if (name == "runtime") {
+        // The runtime object is a special global that doesn't need any code generation
+        // PropertyAccess and MethodCall nodes will optimize runtime.x.y() calls
+        std::cout << "DEBUG: Identifier 'runtime' detected" << std::endl;
+        result_type = DataType::RUNTIME_OBJECT;
+        return;
+    }
+    
     // Check if this is a global imported constant first
     auto it = global_imported_constants.find(name);
     if (it != global_imported_constants.end()) {
@@ -139,6 +154,9 @@ void Identifier::generate_code(CodeGenerator& gen, TypeInference& types) {
         result_type = DataType::FLOAT64;
         return;
     }
+    
+    // For now, let function names fall through to variable lookup
+    // TODO: Implement proper function reference handling
     
     // Fall back to local variable lookup
     DataType var_type = types.get_variable_type(name);
@@ -635,6 +653,8 @@ void FunctionCall::generate_code(CodeGenerator& gen, TypeInference& types) {
 }
 
 void MethodCall::generate_code(CodeGenerator& gen, TypeInference& types) {
+    std::cout << "DEBUG: MethodCall - object: '" << object_name << "', method: '" << method_name << "'" << std::endl;
+    
     // Handle built-in methods
     if (object_name == "console") {
         if (method_name == "log") {
@@ -736,6 +756,10 @@ void MethodCall::generate_code(CodeGenerator& gen, TypeInference& types) {
         // Handle variable method calls (like array.push())
         DataType object_type = types.get_variable_type(object_name);
         
+        // Debug output to see what type we get
+        std::cout << "DEBUG: Method call on object '" << object_name 
+                  << "' has type " << static_cast<int>(object_type) << std::endl;
+        
         if (object_type == DataType::TENSOR) {
             // Handle array/tensor methods
             if (method_name == "push") {
@@ -761,9 +785,83 @@ void MethodCall::generate_code(CodeGenerator& gen, TypeInference& types) {
             } else {
                 throw std::runtime_error("Unknown array method: " + method_name);
             }
+        } else if (object_type == DataType::REGEX) {
+            // Handle regex methods like test, exec
+            std::cout << "DEBUG: Entering REGEX case for method '" << method_name << "'" << std::endl;
+            if (method_name == "test") {
+                // Get the regex variable offset
+                int64_t regex_offset = types.get_variable_offset(object_name);
+                std::cout << "DEBUG: Regex offset for '" << object_name << "' is " << regex_offset << std::endl;
+                
+                // Load regex pointer from stack
+                gen.emit_mov_reg_mem(0, regex_offset); // RAX = [RBP + offset]
+                gen.emit_mov_reg_reg(12, 0); // R12 = RAX (save in callee-saved register)
+                
+                
+                if (arguments.size() > 0) {
+                    arguments[0]->generate_code(gen, types);
+                    gen.emit_mov_reg_reg(6, 0); // RSI = string pointer (RAX has the string)
+                    gen.emit_mov_reg_reg(7, 12); // RDI = R12 (restore regex pointer)
+                    
+                    gen.emit_call("__regex_test");
+                    std::cout << "DEBUG: Called __regex_test, setting result_type to BOOLEAN" << std::endl;
+                    result_type = DataType::BOOLEAN;
+                } else {
+                    throw std::runtime_error("RegExp.test() requires a string argument");
+                }
+            } else if (method_name == "exec") {
+                // SAFE APPROACH: Use callee-saved register to preserve regex pointer
+                int64_t regex_offset = types.get_variable_offset(object_name);
+                
+                // Load regex pointer and save in callee-saved register
+                gen.emit_mov_reg_mem(0, regex_offset); // RAX = [RBP + offset]
+                gen.emit_mov_reg_reg(12, 0); // R12 = RAX (save in callee-saved register)
+                
+                if (arguments.size() > 0) {
+                    // Generate string argument (this may call __string_intern)
+                    arguments[0]->generate_code(gen, types);
+                    
+                    // Set up function call parameters from preserved registers
+                    gen.emit_mov_reg_reg(6, 0);  // RSI = string pointer from RAX
+                    gen.emit_mov_reg_reg(7, 12); // RDI = regex pointer from R12
+                    
+                    gen.emit_call("__regex_exec");
+                    result_type = DataType::TENSOR; // Match object/array
+                } else {
+                    throw std::runtime_error("RegExp.exec() requires a string argument");
+                }
+            } else {
+                throw std::runtime_error("Unknown regex method: " + method_name);
+            }
+        } else if (object_type == DataType::STRING) {
+            // Handle string methods like match, replace, search, split
+            std::cout << "DEBUG: Entering STRING method case for object '" << object_name 
+                      << "' method '" << method_name << "'" << std::endl;
+            if (method_name == "match") {
+                // Get the string variable offset and load the string pointer
+                int64_t string_offset = types.get_variable_offset(object_name);
+                gen.emit_mov_reg_mem(0, string_offset); // Load string pointer
+                gen.emit_mov_mem_reg(-8, 0); // Save string at RBP-8
+                
+                if (arguments.size() > 0) {
+                    // Generate code for regex argument
+                    arguments[0]->generate_code(gen, types);
+                    
+                    // Set up call: string_match(string_ptr, regex_ptr)
+                    gen.emit_mov_reg_mem(7, -8);  // RDI = string pointer
+                    gen.emit_mov_reg_reg(6, 0);   // RSI = regex pointer
+                    gen.emit_call("__string_match");
+                    result_type = DataType::TENSOR; // Array of matches
+                } else {
+                    throw std::runtime_error("String.match() requires a regex argument");
+                }
+            } else {
+                throw std::runtime_error("Unknown string method: " + method_name);
+            }
         } else if (object_type == DataType::UNKNOWN) {
             // If object_name is not a variable, it might be a static method call
             // Generate static method call: ClassName.methodName()
+            std::cout << "DEBUG: Entering UNKNOWN case (static method) for object '" << object_name << "'" << std::endl;
             std::string static_method_label = "__static_" + method_name;
             
             // Set up arguments for static method call (no 'this' parameter)
@@ -830,7 +928,125 @@ void MethodCall::generate_code(CodeGenerator& gen, TypeInference& types) {
     }
 }
 
+void FunctionExpression::generate_code(CodeGenerator& gen, TypeInference& types) {
+    // Simplified approach: just return a function ID without generating inline function code
+    // The function will be generated separately and registered for later execution
+    
+    static int func_expr_counter = 0;
+    int current_func_id = func_expr_counter++;
+    std::string func_name = name.empty() ? 
+        ("__func_expr_" + std::to_string(current_func_id)) : name;
+    
+    // Generate a simple function ID for this expression
+    static int64_t function_id_counter = 1000;
+    int64_t function_id = function_id_counter++;
+    
+    std::cout << "DEBUG: Function expression " << func_name << " assigned ID: " << function_id << std::endl;
+    
+    // Register the function ID with its name for runtime lookup
+    __register_function_id(function_id, func_name);
+    
+    // For now, just return the function ID - actual function execution will be handled later
+    gen.emit_mov_reg_imm(0, function_id);
+    
+    result_type = DataType::FUNCTION;
+}
+
+// Shared registry for function ID to name mapping - used by both registration and lookup
+static std::unordered_map<int64_t, std::string>& get_function_id_registry() {
+    static std::unordered_map<int64_t, std::string> shared_function_registry;
+    return shared_function_registry;
+}
+
+// Global function to look up function names by ID for runtime callbacks
+extern "C" const char* __lookup_function_name_by_id(int64_t function_id) {
+    auto& registry = get_function_id_registry();
+    auto it = registry.find(function_id);
+    if (it != registry.end()) {
+        return it->second.c_str();
+    }
+    return nullptr;
+}
+
+// Function to register a function ID with its name (called from generate_code)
+void __register_function_id(int64_t function_id, const std::string& function_name) {
+    auto& registry = get_function_id_registry();
+    registry[function_id] = function_name;
+}
+
 void ExpressionMethodCall::generate_code(CodeGenerator& gen, TypeInference& types) {
+    std::cout << "DEBUG: ExpressionMethodCall - method: '" << method_name << "'" << std::endl;
+    
+    // OPTIMIZATION: Check if this is runtime.x.y() pattern (like runtime.time.now())
+    ExpressionPropertyAccess* expr_prop = dynamic_cast<ExpressionPropertyAccess*>(object.get());
+    if (expr_prop) {
+        std::cout << "DEBUG: object is ExpressionPropertyAccess, property: '" << expr_prop->property_name << "'" << std::endl;
+        
+        // Check if the inner object is an Identifier with name "runtime"
+        Identifier* runtime_ident = dynamic_cast<Identifier*>(expr_prop->object.get());
+        if (runtime_ident && runtime_ident->name == "runtime") {
+            // This is runtime.x.y() - generate direct function call
+            std::cout << "DEBUG: Found runtime.x.y() pattern!" << std::endl;
+            std::string sub_object = expr_prop->property_name;  // e.g., "time"
+            std::string function_name = "__runtime_" + sub_object + "_" + method_name;
+            
+            // Map common patterns to actual function names
+            if (sub_object == "time" && method_name == "now") {
+                function_name = "__runtime_time_now_millis";
+            } else if (sub_object == "time" && method_name == "nowNanos") {
+                function_name = "__runtime_time_now_nanos";
+            } else if (sub_object == "process" && method_name == "pid") {
+                function_name = "__runtime_process_pid";
+            } else if (sub_object == "process" && method_name == "cwd") {
+                function_name = "__runtime_process_cwd";
+            } else if (sub_object == "timer" && method_name == "setTimeout") {
+                function_name = "__runtime_timer_set_timeout";
+            } else if (sub_object == "timer" && method_name == "clearTimeout") {
+                function_name = "__runtime_timer_clear_timeout";
+            } else if (sub_object == "timer" && method_name == "setInterval") {
+                function_name = "__runtime_timer_set_interval";
+            } else if (sub_object == "timer" && method_name == "clearInterval") {
+                function_name = "__runtime_timer_clear_interval";
+            }
+            // Add more mappings as needed
+            
+            std::cout << "DEBUG: Runtime call optimized: " << sub_object << "." << method_name 
+                      << " -> " << function_name << std::endl;
+            
+            // Generate argument code using proper x86-64 calling convention
+            for (size_t i = 0; i < arguments.size() && i < 6; i++) {
+                arguments[i]->generate_code(gen, types);
+                // Move argument to appropriate register (x86-64 calling convention)
+                switch (i) {
+                    case 0: gen.emit_mov_reg_reg(7, 0); break;  // RDI = RAX (1st arg)
+                    case 1: gen.emit_mov_reg_reg(6, 0); break;  // RSI = RAX (2nd arg)  
+                    case 2: gen.emit_mov_reg_reg(2, 0); break;  // RDX = RAX (3rd arg)
+                    case 3: gen.emit_mov_reg_reg(1, 0); break;  // RCX = RAX (4th arg)
+                    case 4: gen.emit_mov_reg_reg(8, 0); break;  // R8 = RAX (5th arg)
+                    case 5: gen.emit_mov_reg_reg(9, 0); break;  // R9 = RAX (6th arg)
+                }
+            }
+            
+            // Generate the optimized direct function call
+            gen.emit_call(function_name);
+            
+            // Set appropriate result type based on the method
+            if (sub_object == "time" && (method_name == "now" || method_name == "nowNanos")) {
+                result_type = DataType::INT64;
+            } else if (sub_object == "process" && method_name == "cwd") {
+                result_type = DataType::STRING;
+            } else if (sub_object == "timer" && (method_name == "setTimeout" || method_name == "setInterval" || method_name == "setImmediate")) {
+                result_type = DataType::INT64; // Timer ID
+            } else if (sub_object == "timer" && (method_name == "clearTimeout" || method_name == "clearInterval" || method_name == "clearImmediate")) {
+                result_type = DataType::BOOLEAN; // Success/failure
+            } else {
+                result_type = DataType::UNKNOWN;
+            }
+            
+            return; // Skip normal method call handling
+        }
+    }
+    
     // First, generate code for the object expression and get its result
     object->generate_code(gen, types);
     DataType object_type = object->result_type;
@@ -1196,8 +1412,8 @@ void Assignment::generate_code(CodeGenerator& gen, TypeInference& types) {
         } else {
             // Untyped variable - infer type from value for arrays and other structured types
             // For simple values, keep as UNKNOWN for JavaScript compatibility
-            if (value->result_type == DataType::TENSOR || value->result_type == DataType::STRING) {
-                // Arrays and strings should preserve their type for proper method dispatch
+            if (value->result_type == DataType::TENSOR || value->result_type == DataType::STRING || value->result_type == DataType::REGEX) {
+                // Arrays, strings, and regex should preserve their type for proper method dispatch
                 variable_type = value->result_type;
             } else {
                 // Other types keep as UNKNOWN/ANY for JavaScript compatibility
@@ -1221,6 +1437,8 @@ void Assignment::generate_code(CodeGenerator& gen, TypeInference& types) {
         
         // Allocate or get the proper stack offset for this variable
         int64_t offset = types.allocate_variable(variable_name, variable_type);
+        
+        
         gen.emit_mov_mem_reg(offset, 0);
         result_type = variable_type;
     }
@@ -1683,6 +1901,17 @@ void CaseClause::generate_code(CodeGenerator& gen, TypeInference& types) {
 
 // Class-related AST node implementations
 void PropertyAccess::generate_code(CodeGenerator& gen, TypeInference& types) {
+    // OPTIMIZATION: Check if this is a runtime object property access
+    // The JIT will convert runtime.time to a direct pointer without any lookups
+    if (object_name == "runtime") {
+        // This is accessing a runtime sub-object like runtime.time, runtime.fs, etc.
+        // We DON'T generate any code here - just mark the type
+        // The parent ExpressionPropertyAccess or MethodCall will handle the optimization
+        std::cout << "DEBUG: PropertyAccess 'runtime." << property_name << "' detected" << std::endl;
+        result_type = DataType::RUNTIME_OBJECT;
+        return;
+    }
+    
     if (object_name == "this") {
         // Handle this.property access in constructor/method context
         // Get the object_id from the saved this context
@@ -1760,6 +1989,17 @@ void PropertyAccess::generate_code(CodeGenerator& gen, TypeInference& types) {
 }
 
 void ExpressionPropertyAccess::generate_code(CodeGenerator& gen, TypeInference& types) {
+    // OPTIMIZATION: Check if this is runtime.x access (like runtime.time)
+    // If the object is a PropertyAccess with object_name == "runtime"
+    PropertyAccess* prop_access = dynamic_cast<PropertyAccess*>(object.get());
+    if (prop_access && prop_access->object_name == "runtime") {
+        // This is runtime.x access - store the sub-object name for method call optimization
+        // We don't generate any code here - MethodCall will handle the direct call
+        std::cout << "DEBUG: ExpressionPropertyAccess 'runtime." << property_name << "' detected" << std::endl;
+        result_type = DataType::RUNTIME_OBJECT;
+        return;
+    }
+    
     // Generate code for the object expression first
     object->generate_code(gen, types);
     DataType object_type = object->result_type;

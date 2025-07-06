@@ -25,8 +25,8 @@ void X86CodeGen::emit_prologue() {
     code.push_back(0x41); code.push_back(0x56);  // push r14
     code.push_back(0x41); code.push_back(0x57);  // push r15
     
-    // Use dynamic stack size if set, otherwise default to 56 bytes
-    int64_t stack_size = function_stack_size > 0 ? function_stack_size : 56;
+    // Use dynamic stack size if set, otherwise default to 256 bytes for safety
+    int64_t stack_size = function_stack_size > 0 ? function_stack_size : 256;
     // Ensure 16-byte alignment for thread safety (x86-64 ABI requirement)
     if (stack_size % 16 != 0) {
         stack_size += 16 - (stack_size % 16);
@@ -36,8 +36,8 @@ void X86CodeGen::emit_prologue() {
 }
 
 void X86CodeGen::emit_epilogue() {
-    // Use dynamic stack size if set, otherwise default to 56 bytes
-    int64_t stack_size = function_stack_size > 0 ? function_stack_size : 56;
+    // Use dynamic stack size if set, otherwise default to 256 bytes for safety
+    int64_t stack_size = function_stack_size > 0 ? function_stack_size : 256;
     // Ensure 16-byte alignment
     if (stack_size % 16 != 0) {
         stack_size += 16 - (stack_size % 16);
@@ -245,6 +245,8 @@ void X86CodeGen::emit_call(const std::string& label) {
             func_addr = (void*)__console_log_string;
         } else if (label == "__console_log_object") {
             func_addr = (void*)__console_log_object;
+        } else if (label == "__static_stringify") {
+            func_addr = (void*)__static_stringify;
         } else if (label == "__console_time") {
             func_addr = (void*)__console_time;
         } else if (label == "__console_timeEnd") {
@@ -391,9 +393,50 @@ void X86CodeGen::emit_call(const std::string& label) {
             func_addr = (void*)__string_pool_cleanup;
         } else if (label == "__regex_create_by_id") {
             func_addr = (void*)__regex_create_by_id;
+        } else if (label == "__regex_test") {
+            func_addr = (void*)__regex_test;
+        } else if (label == "__regex_exec") {
+            func_addr = (void*)__regex_exec;
+        } else if (label == "__regex_match_all") {
+            func_addr = (void*)__regex_match_all;
+        } else if (label == "__regex_get_source") {
+            func_addr = (void*)__regex_get_source;
+        } else if (label == "__regex_get_global") {
+            func_addr = (void*)__regex_get_global;
+        } else if (label == "__regex_get_ignore_case") {
+            func_addr = (void*)__regex_get_ignore_case;
+        } else if (label == "__regex_create") {
+            func_addr = (void*)__regex_create;
+        } else if (label == "__regex_create_simple") {
+            func_addr = (void*)__regex_create_simple;
+        } else if (label == "__regex_destroy") {
+            func_addr = (void*)__regex_destroy;
+        } else if (label == "__register_regex_pattern") {
+            func_addr = (void*)__register_regex_pattern;
+        } else if (label == "__debug_print_pointer") {
+            func_addr = (void*)__debug_print_pointer;
         }
         
         if (func_addr) {
+            // mov rax, immediate64
+            code.push_back(0x48);
+            code.push_back(0xB8);
+            uint64_t addr = reinterpret_cast<uint64_t>(func_addr);
+            for (int i = 0; i < 8; i++) {
+                code.push_back((addr >> (i * 8)) & 0xFF);
+            }
+            // call rax
+            code.push_back(0xFF);
+            code.push_back(0xD0);
+            return;
+        }
+        
+        // If not found in hardcoded list, check the dynamic function registry
+        extern std::unordered_map<std::string, void*> gots_function_registry;
+        auto it = gots_function_registry.find(label);
+        if (it != gots_function_registry.end()) {
+            func_addr = it->second;
+            
             // mov rax, immediate64
             code.push_back(0x48);
             code.push_back(0xB8);

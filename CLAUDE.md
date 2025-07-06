@@ -112,6 +112,12 @@ for each index|key, value in item { //
 
 Everything is carefully analyzed for types to generate correct assembly code on the fly. there is no "interpretation", meaning everything runs as direct machine code.
 
+The system also extends the Date with with these important methods from momentjs.
+
+new Date(...).add(1, "day|days").subtract(...).isBefore(...).isAfter(...).clone().format("...")
+
+The formatter can be a bit tough, use the same substitions as momentjs.
+
 When types are unspecified, a bit of data is stored next to the variable value regarding how to handle it. For example:
 
 ```gots
@@ -145,3 +151,5 @@ Regular will jit generate code with checks for better debugging.
 To test npm packages, copy the gots binary to ./tests, cd into tests and run from there
 
 When asked to implement ECMAscript things, you can reference ./ecmascript_reference.txt. It is a 10,000 line file, so searching is wise.
+
+NodeJS compatibility. We are not going to implement any modules. Instead we will create a global called runtime. Then runtime will be an object with every possible call you will need to implement every node module. This object will then be used to create node modules in gots.

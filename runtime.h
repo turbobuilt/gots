@@ -10,6 +10,7 @@
 #include <functional>
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
 #include <type_traits>
 #include <cstdlib>
 #include <cstring>
@@ -146,24 +147,34 @@ private:
         } small;
     };
     
-    // Use the LSB of capacity to indicate if it's a small string
-    // Small strings have capacity = 0, large strings have odd capacity
+    // Use the MSB of small.size byte to indicate if it's a small string
+    // This avoids overwriting string data in small.buffer[16-23]
     bool is_small() const {
-        return large.capacity == 0;
+        // Check the high bit of the byte at offset 24 (small.size location)
+        return (reinterpret_cast<const uint8_t*>(this)[24] & 0x80) != 0;
     }
     
     void set_small_flag() {
-        // For small strings, we store size in the last byte
-        // and use capacity=0 to indicate small string
-        large.capacity = 0;
+        // Set the high bit of small.size location to indicate small string
+        // This leaves small.buffer[16-23] untouched
+        reinterpret_cast<uint8_t*>(this)[24] |= 0x80;
+    }
+    
+    void clear_small_flag() {
+        // Clear the high bit for large strings
+        reinterpret_cast<uint8_t*>(this)[24] &= 0x7F;
+    }
+    
+    uint8_t get_small_size() const {
+        // Mask off the flag bit to get actual size (max 127 chars for small strings)
+        return small.size & 0x7F;
     }
 
 public:
     // Default constructor - creates empty small string
     GoTSString() noexcept {
         small.buffer[0] = '\0';
-        small.size = 0;
-        set_small_flag();
+        small.size = 0x80;  // Set flag bit + size 0
     }
     
     // Constructor from C string - optimized for literal strings
@@ -174,18 +185,18 @@ public:
         }
         
         size_t len = strlen(str);
-        if (len <= SSO_THRESHOLD) {
+        if (len <= SSO_THRESHOLD && len <= 127) {  // Max 127 chars due to flag bit
             // Small string optimization
             memcpy(small.buffer, str, len);
             small.buffer[len] = '\0';
-            small.size = static_cast<uint8_t>(len);
-            set_small_flag();
+            small.size = static_cast<uint8_t>(len) | 0x80;  // Set flag bit + actual size
         } else {
             // Large string - allocate on heap
             large.size = len;
             large.capacity = ((len + 16) & ~15) | 1; // Round up to 16-byte boundary, set odd flag
             large.data = new char[large.capacity & ~1]; // Mask off the flag bit
             memcpy(large.data, str, len + 1);
+            clear_small_flag();  // Make sure flag is clear for large strings
         }
     }
     
@@ -206,8 +217,7 @@ public:
     GoTSString(GoTSString&& other) noexcept {
         memcpy(this, &other, sizeof(GoTSString));
         other.small.buffer[0] = '\0';
-        other.small.size = 0;
-        other.set_small_flag();
+        other.small.size = 0x80;  // Set flag bit + size 0
     }
     
     // Assignment operators
@@ -224,8 +234,7 @@ public:
             this->~GoTSString();
             memcpy(this, &other, sizeof(GoTSString));
             other.small.buffer[0] = '\0';
-            other.small.size = 0;
-            other.set_small_flag();
+            other.small.size = 0x80;  // Set flag bit + size 0
         }
         return *this;
     }
@@ -243,7 +252,7 @@ public:
     }
     
     inline size_t size() const {
-        return is_small() ? small.size : large.size;
+        return is_small() ? get_small_size() : large.size;
     }
     
     inline size_t length() const {
@@ -263,13 +272,12 @@ public:
         size_t total_size = size() + other.size();
         GoTSString result;
         
-        if (total_size <= SSO_THRESHOLD) {
+        if (total_size <= SSO_THRESHOLD && total_size <= 127) {
             // Result fits in small string
             memcpy(result.small.buffer, c_str(), size());
             memcpy(result.small.buffer + size(), other.c_str(), other.size());
             result.small.buffer[total_size] = '\0';
-            result.small.size = static_cast<uint8_t>(total_size);
-            result.set_small_flag();
+            result.small.size = static_cast<uint8_t>(total_size) | 0x80;  // Set flag bit + size
         } else {
             // Need large string
             result.large.size = total_size;
@@ -278,6 +286,7 @@ public:
             memcpy(result.large.data, c_str(), size());
             memcpy(result.large.data + size(), other.c_str(), other.size());
             result.large.data[total_size] = '\0';
+            result.clear_small_flag();  // Make sure flag is clear for large strings
         }
         
         return result;
@@ -476,6 +485,115 @@ struct Promise {
     }
 };
 
+// Forward declaration for circular dependency
+class GoroutineScheduler;
+
+// High-Performance Timer Entry for main thread coordination
+// Uses function names to avoid JIT function pointer invalidation
+struct MainThreadTimerEntry {
+    int64_t id;
+    std::chrono::steady_clock::time_point execute_time;
+    
+    // Store function name instead of direct pointer to prevent JIT invalidation
+    std::string callback_function_name;
+    
+    bool is_interval = false;
+    int64_t interval_ms = 0;
+    
+    // Min-heap comparison (earlier times have higher priority)
+    bool operator>(const MainThreadTimerEntry& other) const {
+        return execute_time > other.execute_time;
+    }
+};
+
+// Main Thread Timer Manager - coordinates timers but delegates execution to goroutines
+class MainThreadTimerManager {
+private:
+    // Priority queue for timer scheduling (min-heap by execute_time)
+    std::priority_queue<MainThreadTimerEntry, std::vector<MainThreadTimerEntry>, std::greater<MainThreadTimerEntry>> timer_queue;
+    
+    // Fast cancellation lookup and interval tracking
+    std::unordered_set<int64_t> cancelled_timers;
+    std::unordered_map<int64_t, MainThreadTimerEntry> interval_timers;
+    
+    // Thread synchronization
+    std::mutex timer_mutex;
+    std::condition_variable timer_cv;
+    std::atomic<bool> running{true};
+    std::atomic<int64_t> next_timer_id{1};
+    std::atomic<int64_t> active_timer_count{0};
+    std::atomic<bool> main_script_done{false};
+    
+    // Reference to goroutine scheduler for callback execution
+    GoroutineScheduler* scheduler = nullptr;
+    
+    // Main thread ID for verification
+    std::thread::id main_thread_id;
+    
+public:
+    MainThreadTimerManager() : main_thread_id(std::this_thread::get_id()) {}
+    
+    // Flag to prevent timer execution during main script execution
+    std::atomic<bool> main_execution_active{true};
+    
+    // Set scheduler reference after initialization
+    void set_scheduler(GoroutineScheduler* sched) {
+        scheduler = sched;
+    }
+    
+    // Mark main execution as complete and allow timer execution
+    void mark_main_execution_complete() {
+        std::cout << "DEBUG: Marking main execution complete and notifying timer event loop" << std::endl;
+        main_execution_active.store(false);
+        timer_cv.notify_all();  // Wake up timer event loop to start processing
+    }
+    
+    // High-performance timer addition using function names to avoid JIT invalidation
+    int64_t add_timer(int64_t delay_ms, const std::string& function_name, bool is_interval = false);
+    
+    // Cancel a timer by ID
+    bool cancel_timer(int64_t timer_id) {
+        std::lock_guard<std::mutex> lock(timer_mutex);
+        cancelled_timers.insert(timer_id);
+        interval_timers.erase(timer_id);
+        return true;
+    }
+    
+    // Main thread runs this event loop after spawning main script
+    void run_main_event_loop();
+    
+    // Get number of active timers (for debugging)
+    size_t active_timer_count_debug() const {
+        std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(timer_mutex));
+        return timer_queue.size() - cancelled_timers.size();
+    }
+    
+    // Check if any timers are active
+    bool has_active_timers() const {
+        return active_timer_count.load() > 0;
+    }
+    
+    // Signal that main script is done
+    void signal_main_script_done() {
+        main_script_done.store(true);
+        timer_cv.notify_all();
+    }
+    
+    // Shutdown timer manager
+    void shutdown() {
+        running.store(false);
+        timer_cv.notify_all();
+    }
+    
+    // Verify we're running on main thread
+    bool is_main_thread() const {
+        return std::this_thread::get_id() == main_thread_id;
+    }
+};
+
+// Global timer manager instance
+extern MainThreadTimerManager* g_main_timer_manager;
+
 class ThreadPool {
     
 private:
@@ -609,10 +727,13 @@ private:
                               int64_t hour, int64_t minute, int64_t second, 
                               int64_t millisecond, bool use_utc) const;
     
-    // Static helper methods
+public:
+    // Static helper methods (made public for external access)
     static bool is_leap_year(int64_t year);
     static int64_t days_in_month(int64_t year, int64_t month);
     static int64_t day_of_week(int64_t year, int64_t month, int64_t day);
+    
+private:
     static int64_t parse_iso_string(const char* str);
     static GoTSString* format_iso_string(int64_t time);
     static GoTSString* format_date_string(int64_t time, bool use_utc);
@@ -625,6 +746,7 @@ public:
              int64_t hour = 0, int64_t minute = 0, int64_t second = 0, 
              int64_t millisecond = 0);
     explicit GoTSDate(const char* dateString);
+    GoTSDate(const char* dateString, const char* timezone);
     
     // Copy constructor and assignment
     GoTSDate(const GoTSDate& other) = default;
@@ -688,6 +810,19 @@ public:
     GoTSString* toLocaleString() const;
     GoTSString* toJSON() const;
     
+    // Deprecated methods (required for ECMAScript compliance)
+    int64_t getYear() const;
+    int64_t setYear(int64_t year);
+    GoTSString* toGMTString() const;
+    
+    // Moment.js-like methods for enhanced date manipulation
+    GoTSDate add(int64_t value, const char* unit) const;
+    GoTSDate subtract(int64_t value, const char* unit) const;
+    bool isBefore(const GoTSDate& other) const;
+    bool isAfter(const GoTSDate& other) const;
+    GoTSDate clone() const;
+    GoTSString* format(const char* formatStr) const;
+    
     // Static methods
     static int64_t now();
     static int64_t parse(const char* dateString);
@@ -738,6 +873,7 @@ extern "C" {
     void __runtime_init();
     void __runtime_cleanup();
     void __set_executable_memory(void* ptr, size_t size);
+    void* __get_executable_memory_base();
     
     // Main thread JIT execution queue for thread safety
     struct JITExecutionRequest {
@@ -893,6 +1029,7 @@ extern "C" {
     void* __date_create_from_components(int64_t year, int64_t month, int64_t day,
                                        int64_t hour, int64_t minute, int64_t second, int64_t millisecond);
     void* __date_create_from_string(const char* dateString);
+    void* __date_create_from_string_with_timezone(const char* dateString, const char* timezone);
     void __date_destroy(void* date_ptr);
     
     // Date getter methods
@@ -947,6 +1084,28 @@ extern "C" {
     void* __date_toLocaleString(void* date_ptr);
     void* __date_toJSON(void* date_ptr);
     
+    // Deprecated Date methods (required for ECMAScript compliance)
+    int64_t __date_getYear(void* date_ptr);
+    int64_t __date_setYear(void* date_ptr, int64_t year);
+    void* __date_toGMTString(void* date_ptr);
+    
+    // Date function call (not constructor) - returns string representation
+    void* __date_call();
+    
+    // Date constructor functions for JIT integration
+    void* __constructor_Date();
+    void* __constructor_Date_1(int64_t arg1);
+    void* __constructor_Date_3(int64_t year, int64_t month, int64_t day);
+    void* __constructor_Date_7(int64_t year, int64_t month, int64_t day, int64_t hour, int64_t minute, int64_t second, int64_t millisecond);
+    
+    // Moment.js-like methods for enhanced date manipulation
+    void* __date_add(void* date_ptr, int64_t value, const char* unit);
+    void* __date_subtract(void* date_ptr, int64_t value, const char* unit);
+    bool __date_isBefore(void* date_ptr, void* other_ptr);
+    bool __date_isAfter(void* date_ptr, void* other_ptr);
+    void* __date_clone(void* date_ptr);
+    void* __date_format(void* date_ptr, const char* formatStr);
+    
     // Date static methods
     int64_t __date_parse(const char* dateString);
     int64_t __date_UTC(int64_t year, int64_t month, int64_t day, int64_t hour, int64_t minute, int64_t second, int64_t millisecond);
@@ -981,6 +1140,15 @@ extern "C" {
     
     // Dynamic property access
     void* __dynamic_get_property(void* object_ptr, const char* property_name);
+    
+    // Debug functions
+    void __debug_print_pointer(void* ptr);
+    
+    // JSON functions
+    void* __static_stringify(void* value, int64_t type);
+    
+    // Pattern registry
+    int64_t __register_regex_pattern(const char* pattern);
 }
 
 template<typename F, typename... Args>

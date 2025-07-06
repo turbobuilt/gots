@@ -9,8 +9,78 @@
 
 namespace gots {
 
+// Forward declarations
+struct Token;
+enum class TokenType;
+
+// ANSI color codes for syntax highlighting
+namespace Colors {
+    // Check if terminal supports colors
+    bool supports_color();
+    
+    // Color codes
+    extern const char* RESET;
+    extern const char* BOLD;
+    extern const char* DIM;
+    
+    // Foreground colors
+    extern const char* RED;
+    extern const char* GREEN;
+    extern const char* YELLOW;
+    extern const char* BLUE;
+    extern const char* MAGENTA;
+    extern const char* CYAN;
+    extern const char* WHITE;
+    extern const char* GRAY;
+    
+    // Bright colors
+    extern const char* BRIGHT_RED;
+    extern const char* BRIGHT_GREEN;
+    extern const char* BRIGHT_YELLOW;
+    extern const char* BRIGHT_BLUE;
+    extern const char* BRIGHT_MAGENTA;
+    extern const char* BRIGHT_CYAN;
+}
+
+// Fast syntax highlighter for error context
+class SyntaxHighlighter {
+private:
+    bool use_colors;
+    
+public:
+    SyntaxHighlighter();
+    std::string highlight_line(const std::string& line) const;
+    
+private:
+    std::string colorize_token(const std::string& token, TokenType type) const;
+    TokenType classify_token(const std::string& token) const;
+    bool is_keyword(const std::string& token) const;
+    bool is_number(const std::string& token) const;
+    bool is_string_delimiter(char ch) const;
+};
+
+// Enhanced error reporting system
+class ErrorReporter {
+private:
+    std::string source_code;
+    std::string file_path;
+    SyntaxHighlighter highlighter;
+    
+public:
+    ErrorReporter(const std::string& source, const std::string& file = "") 
+        : source_code(source), file_path(file) {}
+    
+    void report_error(const std::string& message, int line, int column) const;
+    void report_parse_error(const std::string& message, const Token& token) const;
+    void report_lexer_error(const std::string& message, int line, int column, char unexpected_char) const;
+    
+private:
+    std::string get_line_content(int line_number) const;
+    std::string format_error_context(const std::string& message, int line, int column, const std::string& line_content, char problematic_char = '\0') const;
+};
+
 enum class TokenType {
-    IDENTIFIER, NUMBER, STRING, BOOLEAN, REGEX,
+    IDENTIFIER, NUMBER, STRING, TEMPLATE_LITERAL, BOOLEAN, REGEX,
     FUNCTION, GO, AWAIT, LET, VAR, CONST,
     IF, FOR, WHILE, RETURN,
     SWITCH, CASE, DEFAULT, BREAK,
@@ -37,6 +107,7 @@ enum class DataType {
     BOOLEAN, STRING, REGEX,
     TENSOR, PROMISE, FUNCTION,
     CLASS_INSTANCE,  // For class instances
+    RUNTIME_OBJECT,  // For runtime.x property access optimization
     NUMBER = FLOAT64,  // JavaScript compatibility: number is float64
     ANY = UNKNOWN     // ANY is an alias for UNKNOWN (untyped variables)
 };
@@ -128,6 +199,13 @@ public:
     virtual std::vector<uint8_t> get_code() const = 0;
     virtual void clear() = 0;
     virtual const std::unordered_map<std::string, int64_t>& get_label_offsets() const = 0;
+    
+    // Get offset for a specific label
+    virtual int64_t get_label_offset(const std::string& label) const {
+        const auto& offsets = get_label_offsets();
+        auto it = offsets.find(label);
+        return (it != offsets.end()) ? it->second : -1;
+    }
 };
 
 class X86CodeGen : public CodeGenerator {
@@ -327,6 +405,17 @@ struct FunctionCall : ExpressionNode {
     bool is_goroutine = false;
     bool is_awaited = false;
     FunctionCall(const std::string& n) : name(n) {}
+    void generate_code(CodeGenerator& gen, TypeInference& types) override;
+};
+
+struct FunctionExpression : ExpressionNode {
+    std::string name;  // Optional name for debugging/recursion
+    std::vector<Variable> parameters;
+    DataType return_type = DataType::UNKNOWN;
+    std::vector<std::unique_ptr<ASTNode>> body;
+    
+    FunctionExpression() : name("") {}
+    FunctionExpression(const std::string& n) : name(n) {}
     void generate_code(CodeGenerator& gen, TypeInference& types) override;
 };
 
@@ -593,6 +682,7 @@ private:
     std::string source;
     size_t pos = 0;
     int line = 1, column = 1;
+    ErrorReporter* error_reporter = nullptr;
     
     char current_char();
     char peek_char(int offset = 1);
@@ -601,11 +691,13 @@ private:
     void skip_comment();
     Token make_number();
     Token make_string();
+    Token make_template_literal();
     Token make_identifier();
     Token make_regex();
     
 public:
     Lexer(const std::string& src) : source(src) {}
+    Lexer(const std::string& src, ErrorReporter* reporter) : source(src), error_reporter(reporter) {}
     std::vector<Token> tokenize();
 };
 
@@ -613,6 +705,7 @@ class Parser {
 private:
     std::vector<Token> tokens;
     size_t pos = 0;
+    ErrorReporter* error_reporter = nullptr;
     
     Token& current_token();
     Token& peek_token(int offset = 1);
@@ -655,6 +748,7 @@ private:
     
 public:
     Parser(std::vector<Token> toks) : tokens(std::move(toks)) {}
+    Parser(std::vector<Token> toks, ErrorReporter* reporter) : tokens(std::move(toks)), error_reporter(reporter) {}
     std::vector<std::unique_ptr<ASTNode>> parse();
 };
 

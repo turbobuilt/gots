@@ -69,6 +69,9 @@ std::unique_ptr<ExpressionNode> Parser::parse_assignment_expression() {
             auto prop_assignment = std::make_unique<PropertyAssignment>(obj_name, prop_name, std::move(value));
             return prop_assignment;
         } else {
+            if (error_reporter) {
+                error_reporter->report_parse_error("Invalid assignment target", current_token());
+            }
             throw std::runtime_error("Invalid assignment target");
         }
     }
@@ -83,6 +86,9 @@ std::unique_ptr<ExpressionNode> Parser::parse_ternary() {
         auto true_expr = parse_expression();
         
         if (!match(TokenType::COLON)) {
+            if (error_reporter) {
+                error_reporter->report_parse_error("Expected ':' in ternary operator", current_token());
+            }
             throw std::runtime_error("Expected ':' in ternary operator");
         }
         
@@ -228,12 +234,18 @@ std::unique_ptr<ExpressionNode> Parser::parse_call() {
             }
             
             if (!match(TokenType::RPAREN)) {
+                if (error_reporter) {
+                    error_reporter->report_parse_error("Expected ')' after function arguments", current_token());
+                }
                 throw std::runtime_error("Expected ')' after function arguments");
             }
             
             expr = std::move(call);
         } else if (match(TokenType::DOT)) {
             if (!match(TokenType::IDENTIFIER)) {
+                if (error_reporter) {
+                    error_reporter->report_parse_error("Expected property name after '.'", current_token());
+                }
                 throw std::runtime_error("Expected property name after '.'");
             }
             
@@ -379,6 +391,10 @@ std::unique_ptr<ExpressionNode> Parser::parse_primary() {
         return std::make_unique<StringLiteral>(tokens[pos - 1].value);
     }
     
+    if (match(TokenType::TEMPLATE_LITERAL)) {
+        return std::make_unique<StringLiteral>(tokens[pos - 1].value);
+    }
+    
     if (match(TokenType::REGEX)) {
         std::string regex_value = tokens[pos - 1].value;
         
@@ -500,6 +516,81 @@ std::unique_ptr<ExpressionNode> Parser::parse_primary() {
         return super_call;
     }
     
+    if (match(TokenType::FUNCTION)) {
+        // Parse function expression: function(params) { body }
+        auto func_expr = std::make_unique<FunctionExpression>();
+        
+        // Check for optional function name (for recursion/debugging)
+        if (check(TokenType::IDENTIFIER)) {
+            func_expr->name = current_token().value;
+            advance();
+        }
+        
+        // Parse parameters
+        if (!match(TokenType::LPAREN)) {
+            if (error_reporter) {
+                error_reporter->report_parse_error("Expected '(' after 'function'", current_token());
+            }
+            throw std::runtime_error("Expected '(' after 'function'");
+        }
+        
+        if (!check(TokenType::RPAREN)) {
+            do {
+                if (!check(TokenType::IDENTIFIER)) {
+                    if (error_reporter) {
+                        error_reporter->report_parse_error("Expected parameter name", current_token());
+                    }
+                    throw std::runtime_error("Expected parameter name");
+                }
+                
+                Variable param;
+                param.name = current_token().value;
+                param.type = DataType::UNKNOWN;  // Type inference will handle this
+                advance();
+                
+                // Check for type annotation: param: type
+                if (match(TokenType::COLON)) {
+                    param.type = parse_type();
+                }
+                
+                func_expr->parameters.push_back(param);
+            } while (match(TokenType::COMMA));
+        }
+        
+        if (!match(TokenType::RPAREN)) {
+            if (error_reporter) {
+                error_reporter->report_parse_error("Expected ')' after parameters", current_token());
+            }
+            throw std::runtime_error("Expected ')' after parameters");
+        }
+        
+        // Parse return type annotation: function(): ReturnType
+        if (match(TokenType::COLON)) {
+            func_expr->return_type = parse_type();
+        }
+        
+        // Parse function body
+        if (!match(TokenType::LBRACE)) {
+            if (error_reporter) {
+                error_reporter->report_parse_error("Expected '{' to start function body", current_token());
+            }
+            throw std::runtime_error("Expected '{' to start function body");
+        }
+        
+        while (!check(TokenType::RBRACE) && !check(TokenType::EOF_TOKEN)) {
+            func_expr->body.push_back(parse_statement());
+        }
+        
+        if (!match(TokenType::RBRACE)) {
+            if (error_reporter) {
+                error_reporter->report_parse_error("Expected '}' to end function body", current_token());
+            }
+            throw std::runtime_error("Expected '}' to end function body");
+        }
+        
+        return func_expr;
+    }
+    
     if (match(TokenType::NEW)) {
         if (!check(TokenType::IDENTIFIER)) {
             throw std::runtime_error("Expected class name after 'new'");
@@ -554,6 +645,9 @@ std::unique_ptr<ExpressionNode> Parser::parse_primary() {
         return new_expr;
     }
     
+    if (error_reporter) {
+        error_reporter->report_parse_error("Unexpected token", current_token());
+    }
     throw std::runtime_error("Unexpected token: " + current_token().value);
 }
 

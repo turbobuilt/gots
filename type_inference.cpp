@@ -1,6 +1,7 @@
 #include "compiler.h"
 #include <regex>
 #include <algorithm>
+#include <iostream>
 
 namespace gots {
 

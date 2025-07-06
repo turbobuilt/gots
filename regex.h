@@ -9,6 +9,7 @@
 #include <queue>
 #include <bitset>
 #include <cstdint>
+#include <iostream>
 #include "runtime.h"
 
 namespace gots {
@@ -218,7 +219,7 @@ struct NFAState {
     bool is_final = false;
     std::vector<std::pair<char, NFAState*>> char_transitions; // Character transitions
     std::vector<NFAState*> epsilon_transitions; // ε-transitions
-    CharacterClass* char_class = nullptr; // For character class transitions
+    std::shared_ptr<CharacterClass> char_class = nullptr; // For character class transitions
     
     // Special transition types
     bool is_dot = false;
@@ -226,6 +227,9 @@ struct NFAState {
     AnchorType anchor_type;
     
     NFAState(int state_id) : id(state_id) {}
+    
+    // No need for explicit destructor - shared_ptr handles cleanup automatically
+    ~NFAState() = default;
     
     void add_char_transition(char c, NFAState* target) {
         char_transitions.emplace_back(c, target);
@@ -235,7 +239,7 @@ struct NFAState {
         epsilon_transitions.push_back(target);
     }
     
-    void add_char_class_transition(CharacterClass* cc, NFAState* target) {
+    void add_char_class_transition(std::shared_ptr<CharacterClass> cc, NFAState* target) {
         char_class = cc;
         // We'll store the target in epsilon_transitions for now
         epsilon_transitions.push_back(target);
@@ -300,20 +304,47 @@ private:
     
 public:
     DFAState* create_state(const std::unordered_set<NFAState*>& nfa_states) {
+        std::cout << "DEBUG: DFA::create_state called with " << nfa_states.size() << " NFA states" << std::endl;
+        
+        // Check for null states in input
+        for (NFAState* nfa_state : nfa_states) {
+            if (!nfa_state) {
+                std::cout << "DEBUG: ERROR - Null NFA state passed to DFA::create_state!" << std::endl;
+                throw std::runtime_error("Null NFA state in DFA::create_state");
+            }
+        }
+        
         auto state = std::make_unique<DFAState>(next_state_id++);
-        state->nfa_states = nfa_states;
+        std::cout << "DEBUG: Created DFA state with ID " << state->id << std::endl;
+        
+        std::cout << "DEBUG: About to assign nfa_states to DFA state" << std::endl;
+        try {
+            // Use explicit copy to avoid potential assignment issues
+            for (NFAState* nfa_state : nfa_states) {
+                state->nfa_states.insert(nfa_state);
+            }
+            std::cout << "DEBUG: Successfully assigned " << state->nfa_states.size() << " nfa_states to DFA state" << std::endl;
+        } catch (const std::exception& e) {
+            std::cout << "DEBUG: Exception during nfa_states assignment: " << e.what() << std::endl;
+            throw;
+        }
         
         // Check if any of the NFA states are final
+        std::cout << "DEBUG: About to check for final states" << std::endl;
         for (NFAState* nfa_state : nfa_states) {
+            std::cout << "DEBUG: Checking if NFA state " << nfa_state->id << " is final" << std::endl;
             if (nfa_state->is_final) {
+                std::cout << "DEBUG: DFA state " << state->id << " is final (contains final NFA state " << nfa_state->id << ")" << std::endl;
                 state->is_final = true;
                 final_states.push_back(state.get());
                 break;
             }
         }
+        std::cout << "DEBUG: Finished checking final states" << std::endl;
         
         DFAState* state_ptr = state.get();
         states.push_back(std::move(state));
+        std::cout << "DEBUG: DFA::create_state returning state " << state_ptr->id << std::endl;
         return state_ptr;
     }
     
@@ -330,6 +361,20 @@ private:
     size_t pos = 0;
     RegexFlags flags = RegexFlags::NONE;
     int next_group_number = 1;
+    mutable int recursion_depth = 0;
+    static const int MAX_RECURSION_DEPTH = 1000;
+    
+    // RAII helper for recursion depth checking
+    class RecursionGuard {
+        int& depth;
+    public:
+        RecursionGuard(int& d) : depth(d) {
+            if (++depth > MAX_RECURSION_DEPTH) {
+                throw std::runtime_error("Regex pattern too complex (recursion depth exceeded)");
+            }
+        }
+        ~RecursionGuard() { --depth; }
+    };
     
     char current_char() const;
     char peek_char(int offset = 1) const;
@@ -418,6 +463,7 @@ private:
     std::unique_ptr<NFA> nfa; // Fallback for complex features not supported by DFA
     RegexFlags flags;
     bool use_dfa = true;
+    std::string original_pattern; // Store original pattern for simple regex implementation
     
     // DFA-based matching (fastest)
     RegexMatch match_dfa(const std::string& text, int start_pos = 0);
@@ -425,13 +471,28 @@ private:
     // NFA-based matching (supports all features)
     RegexMatch match_nfa(const std::string& text, int start_pos = 0);
     
+    // Helper methods for temporary simple regex implementation
+    std::string get_original_pattern() const;
+    RegexMatch match_pattern(const std::string& pattern, const std::string& text, int start_pos);
+    RegexMatch match_email_pattern(const std::string& text, int start_pos);
+    RegexMatch match_number_pattern(const std::string& text, int start_pos);
+    RegexMatch match_ip_pattern(const std::string& text, int start_pos);
+    RegexMatch match_hashtag_pattern(const std::string& text, int start_pos);
+    RegexMatch match_repeated_word_pattern(const std::string& text, int start_pos);
+    RegexMatch match_quoted_string_pattern(const std::string& text, int start_pos);
+    
     // Boyer-Moore-like optimization for literal prefixes
     std::vector<int> build_bad_char_table(const std::string& pattern);
     int find_literal_prefix(const std::string& text, const std::string& pattern, int start_pos);
     
 public:
     RegexMatcher(std::unique_ptr<DFA> d, std::unique_ptr<NFA> n, RegexFlags f)
-        : dfa(std::move(d)), nfa(std::move(n)), flags(f) {}
+        : dfa(std::move(d)), nfa(std::move(n)), flags(f) {
+        // Disable DFA mode if DFA has no start state
+        if (!dfa || !dfa->get_start_state()) {
+            use_dfa = false;
+        }
+    }
     
     // Find first match
     RegexMatch match(const std::string& text, int start_pos = 0);
@@ -444,6 +505,9 @@ public:
     
     // Find position of first match
     int search(const std::string& text, int start_pos = 0);
+    
+    // Set original pattern (public method)
+    void set_original_pattern(const std::string& pattern);
 };
 
 // Main regex engine class

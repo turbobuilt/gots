@@ -1,4 +1,5 @@
 #include "compiler.h"
+#include "runtime.h"
 #include <iostream>
 #include <string>
 #include <fstream>
@@ -169,22 +170,92 @@ public:
 
 void run_program(const std::string& filename) {
     try {
-        // Read the GoTS file
+        // Initialize timer manager but defer scheduler connection until after main execution
+        auto& scheduler = GoroutineScheduler::instance();
+        // Don't connect scheduler during main execution to prevent conflicts
+        // gots::g_main_timer_manager->set_scheduler(&scheduler);
+        
+        // Read and execute program normally on main thread
         std::string program = read_file(filename);
         
-        // Compile and execute the program
         GoTSCompiler compiler(Backend::X86_64);
         compiler.set_current_file(filename);
         compiler.compile(program);
         compiler.execute();
         
+        // After main execution, wait for any pending timers
+        std::cout << "DEBUG: Main execution completed, checking for active timers..." << std::endl;
+        std::cout << "DEBUG: Timer manager pointer: " << gots::g_main_timer_manager << std::endl;
+        
+        if (gots::g_main_timer_manager) {
+            bool has_timers = gots::g_main_timer_manager->has_active_timers();
+            std::cout << "DEBUG: has_active_timers() = " << has_timers << std::endl;
+            
+            if (has_timers) {
+                std::cout << "DEBUG: Found active timers, connecting scheduler and starting timer event loop..." << std::endl;
+                
+                // Now it's safe to connect the scheduler for timer execution
+                gots::g_main_timer_manager->set_scheduler(&scheduler);
+                
+                // Start timer event loop in a separate thread
+                std::thread timer_thread([]() {
+                    std::cout << "DEBUG: Timer thread started" << std::endl;
+                    if (gots::g_main_timer_manager) {
+                        std::cout << "DEBUG: About to call run_main_event_loop()" << std::endl;
+                        gots::g_main_timer_manager->run_main_event_loop();
+                        std::cout << "DEBUG: run_main_event_loop() completed" << std::endl;
+                    } else {
+                        std::cout << "DEBUG: Timer manager is null in timer thread" << std::endl;
+                    }
+                });
+                
+                std::cout << "DEBUG: Timer thread launched, waiting for timers..." << std::endl;
+                
+                // Wait for all timers to complete
+                int wait_count = 0;
+                while (gots::g_main_timer_manager && gots::g_main_timer_manager->has_active_timers()) {
+                    wait_count++;
+                    std::cout << "DEBUG: Waiting for timers (iteration " << wait_count << ")..." << std::endl;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                    if (wait_count > 50) {  // 5 second timeout
+                        std::cout << "DEBUG: Timer wait timeout, forcing shutdown" << std::endl;
+                        break;
+                    }
+                }
+                
+                std::cout << "DEBUG: Timer wait completed, shutting down..." << std::endl;
+                
+                // Shutdown and wait for timer thread
+                if (gots::g_main_timer_manager) {
+                    std::cout << "DEBUG: Calling timer manager shutdown..." << std::endl;
+                    gots::g_main_timer_manager->shutdown();
+                    std::cout << "DEBUG: Timer manager shutdown completed" << std::endl;
+                }
+                
+                std::cout << "DEBUG: Joining timer thread..." << std::endl;
+                timer_thread.join();
+                std::cout << "DEBUG: Timer thread joined successfully" << std::endl;
+            } else {
+                std::cout << "DEBUG: No active timers found" << std::endl;
+            }
+        } else {
+            std::cout << "DEBUG: Timer manager is null" << std::endl;
+        }
+        
     } catch (const std::exception& e) {
+        // Cleanup on error
+        if (gots::g_main_timer_manager) {
+            gots::g_main_timer_manager->shutdown();
+        }
         std::cerr << "Error: " << e.what() << std::endl;
         throw;
     }
 }
 
 int main(int argc, char* argv[]) {
+    // Initialize timer manager at program start
+    gots::g_main_timer_manager = new gots::MainThreadTimerManager();
+    
     bool watch_flag = false;
     std::string filename;
     
@@ -272,6 +343,12 @@ int main(int argc, char* argv[]) {
         } catch (const std::exception& e) {
             return 1;
         }
+    }
+    
+    // Cleanup global timer manager
+    if (gots::g_main_timer_manager) {
+        delete gots::g_main_timer_manager;
+        gots::g_main_timer_manager = nullptr;
     }
     
     return 0;

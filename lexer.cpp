@@ -140,6 +140,35 @@ Token Lexer::make_string() {
     return {TokenType::STRING, str, start_line, start_column};
 }
 
+Token Lexer::make_template_literal() {
+    std::string str;
+    int start_line = line, start_column = column;
+    advance(); // skip opening backtick
+    
+    while (current_char() != '`' && current_char() != '\0') {
+        if (current_char() == '\\') {
+            advance();
+            switch (current_char()) {
+                case 'n': str += '\n'; break;
+                case 't': str += '\t'; break;
+                case 'r': str += '\r'; break;
+                case '\\': str += '\\'; break;
+                case '`': str += '`'; break;
+                default: str += current_char(); break;
+            }
+        } else {
+            str += current_char();
+        }
+        advance();
+    }
+    
+    if (current_char() == '`') {
+        advance(); // skip closing backtick
+    }
+    
+    return {TokenType::TEMPLATE_LITERAL, str, start_line, start_column};
+}
+
 Token Lexer::make_identifier() {
     std::string identifier;
     int start_line = line, start_column = column;
@@ -173,6 +202,9 @@ Token Lexer::make_regex() {
             }
         } else if (current_char() == '\n') {
             // Regex cannot span multiple lines
+            if (error_reporter) {
+                error_reporter->report_lexer_error("Unterminated regex literal - regex cannot span multiple lines", line, column, current_char());
+            }
             throw std::runtime_error("Unterminated regex literal");
         } else {
             pattern += current_char();
@@ -181,6 +213,9 @@ Token Lexer::make_regex() {
     }
     
     if (current_char() != '/') {
+        if (error_reporter) {
+            error_reporter->report_lexer_error("Unterminated regex literal", line, column, current_char());
+        }
         throw std::runtime_error("Unterminated regex literal at position " + std::to_string(pos) + 
                                  ", found: '" + std::string(1, current_char()) + "'");
     }
@@ -226,6 +261,8 @@ std::vector<Token> Lexer::tokenize() {
             tokens.push_back(make_number());
         } else if (current_char() == '"' || current_char() == '\'') {
             tokens.push_back(make_string());
+        } else if (current_char() == '`') {
+            tokens.push_back(make_template_literal());
         } else if (std::isalpha(current_char()) || current_char() == '_' || current_char() == '$') {
             tokens.push_back(make_identifier());
         } else {
@@ -419,8 +456,10 @@ std::vector<Token> Lexer::tokenize() {
                     }
                     break;
                 default:
-                    advance();
-                    continue; // Skip unknown characters
+                    if (error_reporter) {
+                        error_reporter->report_lexer_error("Unexpected character", line, column, ch);
+                    }
+                    throw std::runtime_error("Unexpected character: '" + std::string(1, ch) + "'");
             }
             
             tokens.push_back({type, value, start_line, start_column});

@@ -1,6 +1,7 @@
 #include "runtime.h"
 #include "compiler.h"
 #include "lexical_scope.h"
+#include "regex.h"
 #include <iostream>
 #include <algorithm>
 #include <chrono>
@@ -9,13 +10,17 @@
 #include <signal.h>
 #include <setjmp.h>
 #include <cmath>
+#include <regex>
 
 namespace gots {
 
-// Global goroutine scheduler instance pointer
-// Using a pointer to control initialization/destruction order
+// Global instances
+// Using pointers to control initialization/destruction order
 static GoroutineScheduler* global_scheduler = nullptr;
 static std::mutex scheduler_mutex;
+
+// Global timer manager instance definition
+MainThreadTimerManager* g_main_timer_manager = nullptr;
 
 ThreadPool::ThreadPool(size_t num_threads) {
     // Use the full number of available hardware threads for maximum performance
@@ -375,11 +380,18 @@ void __runtime_init() {
     // This ensures it's created during program startup, not during static destruction
     GoroutineScheduler::instance();
     
+    
     // Runtime initialization complete
+}
+
+void* __get_executable_memory_base() {
+    std::lock_guard<std::mutex> lock(g_executable_memory.mutex);
+    return g_executable_memory.ptr;
 }
 
 void __runtime_cleanup() {
     std::cout << "GoTS Runtime cleanup" << std::endl;
+    
     
     // Properly cleanup the goroutine scheduler
     std::lock_guard<std::mutex> lock(scheduler_mutex);
@@ -1421,7 +1433,8 @@ char __string_char_at(void* string_ptr, int64_t index) {
 // String pool functions for literal optimization
 void* __string_intern(const char* str) {
     if (!str) return nullptr;
-    return global_string_pool.intern(str);
+    // Temporarily disable string interning to avoid crash
+    return new GoTSString(str);
 }
 
 void __string_pool_cleanup() {
@@ -1434,6 +1447,48 @@ void __console_log_string(void* string_ptr) {
         GoTSString* str = static_cast<GoTSString*>(string_ptr);
         std::cout << str->c_str();
     }
+}
+
+// JSON.stringify implementation - simple version for arrays and basic types
+void* __static_stringify(void* value, int64_t type) {
+    if (!value) {
+        return __string_create("null");
+    }
+    
+    // For now, handle arrays by converting them to JSON array format
+    // This is a simplified implementation
+    try {
+        // Check if it's an array pointer
+        int64_t* array_ptr = static_cast<int64_t*>(value);
+        if (array_ptr && array_ptr[0] > 0 && array_ptr[0] < 1000000) { // Basic sanity check for array size
+            int64_t size = array_ptr[0];
+            std::string result = "[";
+            
+            for (int64_t i = 0; i < size; i++) {
+                if (i > 0) result += ",";
+                
+                int64_t element = array_ptr[i + 1];
+                // Check if element is a string pointer
+                if (element > 0x100000) {
+                    try {
+                        GoTSString* str = reinterpret_cast<GoTSString*>(element);
+                        result += "\"" + std::string(str->c_str()) + "\"";
+                    } catch (...) {
+                        result += std::to_string(element);
+                    }
+                } else {
+                    result += std::to_string(element);
+                }
+            }
+            result += "]";
+            return __string_create(result.c_str());
+        }
+    } catch (...) {
+        // If array handling fails, fall back to simple conversion
+    }
+    
+    // Fallback: return string representation
+    return __string_create("[object Object]");
 }
 
 // Date/Time functions - high performance implementation
@@ -1456,13 +1511,34 @@ void GoTSDate::update_timezone_cache() const {
         auto now = std::chrono::system_clock::now();
         auto utc_time = std::chrono::system_clock::to_time_t(now);
         
-        // Get local time struct
+        // Portable timezone offset calculation
+        // Calculate offset by comparing local time with UTC time
         std::tm* local_tm = std::localtime(&utc_time);
-        if (local_tm) {
-            // Calculate offset from UTC in minutes
-            // This is a simplified implementation - a full implementation would need
-            // to handle DST transitions and various timezone complexities
-            cached_timezone_offset = local_tm->tm_gmtoff / 60; // Convert seconds to minutes
+        std::tm* utc_tm = std::gmtime(&utc_time);
+        
+        if (local_tm && utc_tm) {
+            // Convert both to seconds since epoch and calculate difference
+            std::time_t local_seconds = std::mktime(local_tm);
+            std::time_t utc_seconds = std::mktime(utc_tm);
+            
+            // Note: mktime treats the input as local time, so we need to adjust
+            // Calculate the offset by comparing the times
+            int64_t offset_seconds = static_cast<int64_t>(local_seconds) - static_cast<int64_t>(utc_seconds);
+            
+            // Alternative portable method: Compare hour/minute differences
+            int64_t local_minutes = local_tm->tm_hour * 60 + local_tm->tm_min;
+            int64_t utc_minutes = utc_tm->tm_hour * 60 + utc_tm->tm_min;
+            int64_t day_diff = local_tm->tm_mday - utc_tm->tm_mday;
+            
+            // Adjust for day boundary crossings
+            cached_timezone_offset = local_minutes - utc_minutes + (day_diff * 24 * 60);
+            
+            // Handle wrap-around cases (e.g., UTC 23:30 vs Local 01:30 next day)
+            if (cached_timezone_offset > 12 * 60) {
+                cached_timezone_offset -= 24 * 60;
+            } else if (cached_timezone_offset < -12 * 60) {
+                cached_timezone_offset += 24 * 60;
+            }
         } else {
             cached_timezone_offset = 0; // Fallback to UTC
         }
@@ -1504,6 +1580,27 @@ int64_t GoTSDate::day_of_week(int64_t year, int64_t month, int64_t day) {
     return (h + 5) % 7;
 }
 
+// Static helper for days since epoch calculation
+static int64_t days_since_epoch_static(int64_t year, int64_t month, int64_t day) {
+    // Calculate days since Unix epoch (January 1, 1970)
+    int64_t days = 0;
+    
+    // Add days for complete years since 1970
+    for (int64_t y = 1970; y < year; y++) {
+        days += GoTSDate::is_leap_year(y) ? 366 : 365;
+    }
+    
+    // Add days for complete months in the current year
+    for (int64_t m = 0; m < month; m++) {
+        days += GoTSDate::days_in_month(year, m);
+    }
+    
+    // Add remaining days
+    days += day - 1; // day is 1-based
+    
+    return days;
+}
+
 int64_t GoTSDate::days_since_epoch(int64_t year, int64_t month, int64_t day) const {
     // Calculate days since Unix epoch (January 1, 1970)
     // This is a simplified calculation - production code should handle edge cases
@@ -1524,6 +1621,70 @@ int64_t GoTSDate::days_since_epoch(int64_t year, int64_t month, int64_t day) con
     days += day - 1; // day is 1-based
     
     return days;
+}
+
+void GoTSDate::normalize_time_components(int64_t& year, int64_t& month, int64_t& day, 
+                                        int64_t& hour, int64_t& minute, int64_t& second) const {
+    // Normalize seconds
+    if (second >= 60) {
+        minute += second / 60;
+        second = second % 60;
+    } else if (second < 0) {
+        int64_t borrow = (-second + 59) / 60;
+        minute -= borrow;
+        second += borrow * 60;
+    }
+    
+    // Normalize minutes
+    if (minute >= 60) {
+        hour += minute / 60;
+        minute = minute % 60;
+    } else if (minute < 0) {
+        int64_t borrow = (-minute + 59) / 60;
+        hour -= borrow;
+        minute += borrow * 60;
+    }
+    
+    // Normalize hours
+    if (hour >= 24) {
+        day += hour / 24;
+        hour = hour % 24;
+    } else if (hour < 0) {
+        int64_t borrow = (-hour + 23) / 24;
+        day -= borrow;
+        hour += borrow * 24;
+    }
+    
+    // Normalize months
+    if (month >= 12) {
+        year += month / 12;
+        month = month % 12;
+    } else if (month < 0) {
+        int64_t borrow = (-month + 11) / 12;
+        year -= borrow;
+        month += borrow * 12;
+    }
+    
+    // Normalize days (more complex due to varying month lengths)
+    while (day < 1) {
+        // Move to previous month
+        month--;
+        if (month < 0) {
+            month = 11;
+            year--;
+        }
+        day += days_in_month(year, month);
+    }
+    
+    while (day > days_in_month(year, month)) {
+        // Move to next month
+        day -= days_in_month(year, month);
+        month++;
+        if (month >= 12) {
+            month = 0;
+            year++;
+        }
+    }
 }
 
 void GoTSDate::time_to_components(int64_t time, bool use_utc, int64_t& year, int64_t& month, 
@@ -1616,11 +1777,59 @@ GoTSDate::GoTSDate(int64_t millis) : time_value(millis), timezone_offset_cached(
 GoTSDate::GoTSDate(int64_t year, int64_t month, int64_t day, 
                    int64_t hour, int64_t minute, int64_t second, 
                    int64_t millisecond) : timezone_offset_cached(false) {
-    time_value = components_to_time(year, month, day, hour, minute, second, millisecond, false);
+    // ECMAScript requires two-digit year handling: 0-99 -> 1900-1999
+    int64_t actual_year = year;
+    if (year >= 0 && year <= 99) {
+        actual_year = year + 1900;
+    }
+    time_value = components_to_time(actual_year, month, day, hour, minute, second, millisecond, false);
 }
 
 GoTSDate::GoTSDate(const char* dateString) : timezone_offset_cached(false) {
     time_value = parse_iso_string(dateString);
+}
+
+GoTSDate::GoTSDate(const char* dateString, const char* timezone) : timezone_offset_cached(false) {
+    // Parse the date string first
+    time_value = parse_iso_string(dateString);
+    
+    // Apply timezone offset if provided
+    if (timezone && strlen(timezone) > 0) {
+        // Handle common timezone formats:
+        // "UTC", "GMT", "+05:00", "-08:00", "PST", "EST", etc.
+        int64_t offset_millis = 0;
+        
+        if (strcmp(timezone, "UTC") == 0 || strcmp(timezone, "GMT") == 0) {
+            offset_millis = 0;
+        } else if (timezone[0] == '+' || timezone[0] == '-') {
+            // Parse +HH:MM or -HH:MM format
+            int sign = (timezone[0] == '+') ? -1 : 1; // Note: opposite sign because we convert TO UTC
+            if (strlen(timezone) >= 6 && timezone[3] == ':') {
+                int hours = (timezone[1] - '0') * 10 + (timezone[2] - '0');
+                int minutes = (timezone[4] - '0') * 10 + (timezone[5] - '0');
+                offset_millis = sign * (hours * 3600000LL + minutes * 60000LL);
+            } else if (strlen(timezone) >= 3) {
+                // Parse +HH or -HH format
+                int hours = (timezone[1] - '0') * 10 + (timezone[2] - '0');
+                offset_millis = sign * (hours * 3600000LL);
+            }
+        } else {
+            // Handle named timezones (simplified mapping)
+            if (strcmp(timezone, "PST") == 0) {
+                offset_millis = 8 * 3600000LL; // UTC-8
+            } else if (strcmp(timezone, "EST") == 0) {
+                offset_millis = 5 * 3600000LL; // UTC-5
+            } else if (strcmp(timezone, "CST") == 0) {
+                offset_millis = 6 * 3600000LL; // UTC-6
+            } else if (strcmp(timezone, "MST") == 0) {
+                offset_millis = 7 * 3600000LL; // UTC-7
+            }
+            // Add more timezone mappings as needed
+        }
+        
+        // Apply the offset to convert to UTC
+        time_value += offset_millis;
+    }
 }
 
 // Core time methods
@@ -1638,8 +1847,13 @@ int64_t GoTSDate::now() {
 int64_t GoTSDate::UTC(int64_t year, int64_t month, int64_t day, 
                       int64_t hour, int64_t minute, int64_t second, 
                       int64_t millisecond) {
+    // ECMAScript requires two-digit year handling: 0-99 -> 1900-1999
+    int64_t actual_year = year;
+    if (year >= 0 && year <= 99) {
+        actual_year = year + 1900;
+    }
     GoTSDate temp_date;
-    return temp_date.components_to_time(year, month, day, hour, minute, second, millisecond, true);
+    return temp_date.components_to_time(actual_year, month, day, hour, minute, second, millisecond, true);
 }
 
 // Local time getters
@@ -1940,9 +2154,43 @@ int64_t GoTSDate::setUTCMilliseconds(int64_t milliseconds) {
 
 // String formatting methods implementation
 GoTSString* GoTSDate::format_iso_string(int64_t time) {
-    GoTSDate temp(time);
+    // Static helper method to decompose time into UTC components
     int64_t year, month, day, hour, minute, second, millisecond;
-    temp.time_to_components(time, true, year, month, day, hour, minute, second, millisecond);
+    
+    // Convert time to components (UTC)
+    millisecond = time % 1000;
+    time /= 1000;
+    second = time % 60;
+    time /= 60;
+    minute = time % 60;
+    time /= 60;
+    hour = time % 24;
+    time /= 24;
+    
+    // Calculate year, month, day from days since epoch
+    int64_t days = time;
+    year = 1970 + (days / 365);
+    
+    // Refine year calculation
+    while (days_since_epoch_static(year, 0, 1) > days) {
+        year--;
+    }
+    while (days_since_epoch_static(year + 1, 0, 1) <= days) {
+        year++;
+    }
+    
+    // Calculate remaining days in the year
+    int64_t remaining_days = days - days_since_epoch_static(year, 0, 1);
+    
+    // Calculate month
+    month = 0;
+    while (month < 11 && remaining_days >= days_in_month(year, month)) {
+        remaining_days -= days_in_month(year, month);
+        month++;
+    }
+    
+    // Calculate day
+    day = remaining_days + 1;
     
     char buffer[32];
     snprintf(buffer, sizeof(buffer), "%04lld-%02lld-%02lldT%02lld:%02lld:%02lld.%03lldZ",
@@ -1953,9 +2201,51 @@ GoTSString* GoTSDate::format_iso_string(int64_t time) {
 }
 
 GoTSString* GoTSDate::format_date_string(int64_t time, bool use_utc) {
-    GoTSDate temp(time);
     int64_t year, month, day, hour, minute, second, millisecond;
-    temp.time_to_components(time, use_utc, year, month, day, hour, minute, second, millisecond);
+    
+    // Static time conversion logic
+    int64_t work_time = time;
+    
+    if (!use_utc) {
+        // Apply local timezone offset (simplified - assume UTC for now in static context)
+        // Note: This is a simplified implementation. Full implementation would need timezone data
+        work_time += 0; // Placeholder - would need proper timezone handling
+    }
+    
+    // Convert time to components
+    millisecond = work_time % 1000;
+    work_time /= 1000;
+    second = work_time % 60;
+    work_time /= 60;
+    minute = work_time % 60;
+    work_time /= 60;
+    hour = work_time % 24;
+    work_time /= 24;
+    
+    // Calculate year, month, day from days since epoch
+    int64_t days = work_time;
+    year = 1970 + (days / 365);
+    
+    // Refine year calculation
+    while (days_since_epoch_static(year, 0, 1) > days) {
+        year--;
+    }
+    while (days_since_epoch_static(year + 1, 0, 1) <= days) {
+        year++;
+    }
+    
+    // Calculate remaining days in the year
+    int64_t remaining_days = days - days_since_epoch_static(year, 0, 1);
+    
+    // Calculate month
+    month = 0;
+    while (month < 11 && remaining_days >= days_in_month(year, month)) {
+        remaining_days -= days_in_month(year, month);
+        month++;
+    }
+    
+    // Calculate day
+    day = remaining_days + 1;
     
     static const char* month_names[] = {
         "Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -1977,7 +2267,7 @@ GoTSString* GoTSDate::format_date_string(int64_t time, bool use_utc) {
         snprintf(buffer, sizeof(buffer), "%s %s %02lld %04lld %02lld:%02lld:%02lld GMT%+03lld%02lld",
                  day_names[day_of_week_val], month_names[month], (long long)day, (long long)year,
                  (long long)hour, (long long)minute, (long long)second,
-                 (long long)(-temp.getTimezoneOffset() / 60), (long long)(abs(temp.getTimezoneOffset()) % 60));
+                 0LL, 0LL); // Simplified - assume UTC timezone offset for static context
     }
     
     return new GoTSString(buffer);
@@ -1986,12 +2276,17 @@ GoTSString* GoTSDate::format_date_string(int64_t time, bool use_utc) {
 int64_t GoTSDate::parse_iso_string(const char* str) {
     if (!str) return INT64_MIN; // Invalid date
     
-    // Simple ISO 8601 parser - supports formats like:
-    // "2023-12-25T10:30:45.123Z"
-    // "2023-12-25T10:30:45Z"
-    // "2023-12-25"
+    // Enhanced ISO 8601 parser - supports formats like:
+    // "2023-12-25T10:30:45.123Z"          (UTC)
+    // "2023-12-25T10:30:45Z"              (UTC)
+    // "2023-12-25T10:30:45.123+05:30"     (with timezone offset)
+    // "2023-12-25T10:30:45-08:00"         (with timezone offset)
+    // "2023-12-25"                        (date only)
     
     int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0, millisecond = 0;
+    int tz_hour = 0, tz_minute = 0;
+    bool has_timezone = false;
+    bool is_utc = false;
     
     // Try to parse basic date part
     int parsed = sscanf(str, "%d-%d-%d", &year, &month, &day);
@@ -2003,15 +2298,74 @@ int64_t GoTSDate::parse_iso_string(const char* str) {
     const char* time_part = strchr(str, 'T');
     if (time_part) {
         time_part++; // Skip 'T'
-        sscanf(time_part, "%d:%d:%d.%d", &hour, &minute, &second, &millisecond);
+        
+        // Parse time components (handle both with and without milliseconds)
+        char time_str[32];
+        strncpy(time_str, time_part, sizeof(time_str) - 1);
+        time_str[sizeof(time_str) - 1] = '\0';
+        
+        // Look for timezone indicator
+        char* tz_pos = nullptr;
+        if ((tz_pos = strchr(time_str, 'Z')) != nullptr) {
+            is_utc = true;
+            *tz_pos = '\0'; // Truncate at Z
+        } else if ((tz_pos = strchr(time_str, '+')) != nullptr || 
+                   (tz_pos = strrchr(time_str, '-')) != nullptr) {
+            // Found timezone offset (note: strrchr for '-' to avoid confusion with negative years)
+            if (tz_pos > time_str) { // Make sure it's not the year's minus sign
+                has_timezone = true;
+                char tz_sign = *tz_pos;
+                *tz_pos = '\0'; // Truncate time string at timezone
+                tz_pos++; // Move past the sign
+                
+                // Parse timezone offset
+                int parsed_tz = sscanf(tz_pos, "%d:%d", &tz_hour, &tz_minute);
+                if (parsed_tz < 1) {
+                    return INT64_MIN; // Invalid timezone format
+                }
+                
+                // Apply sign to timezone offset
+                if (tz_sign == '-') {
+                    tz_hour = -tz_hour;
+                    tz_minute = -tz_minute;
+                }
+            }
+        }
+        
+        // Parse the time components
+        int time_parsed = sscanf(time_str, "%d:%d:%d.%d", &hour, &minute, &second, &millisecond);
+        if (time_parsed < 3) {
+            // Try without milliseconds
+            time_parsed = sscanf(time_str, "%d:%d:%d", &hour, &minute, &second);
+            if (time_parsed < 3) {
+                return INT64_MIN; // Invalid time format
+            }
+        }
     }
     
     // Convert to 0-based month for internal calculations
     month--;
     
-    // Create a temporary date object to use the conversion function
-    GoTSDate temp;
-    return temp.components_to_time(year, month, day, hour, minute, second, millisecond, true);
+    // Static components to time conversion
+    // Calculate total milliseconds using static method
+    int64_t days = days_since_epoch_static(year, month, day);
+    int64_t total_ms = days * 24 * 60 * 60 * 1000;
+    total_ms += hour * 60 * 60 * 1000;
+    total_ms += minute * 60 * 1000;
+    total_ms += second * 1000;
+    total_ms += millisecond;
+    
+    // Apply timezone offset if present
+    if (has_timezone && !is_utc) {
+        // Convert timezone offset to milliseconds and subtract from time
+        // (subtracting because we want UTC time)
+        int64_t tz_offset_ms = (tz_hour * 60 + tz_minute) * 60 * 1000;
+        total_ms -= tz_offset_ms;
+    }
+    // If no timezone specified and no 'Z', treat as local time (simplified)
+    // In a full implementation, this would convert from local to UTC
+    
+    return total_ms;
 }
 
 int64_t GoTSDate::parse(const char* dateString) {
@@ -2066,19 +2420,367 @@ GoTSString* GoTSDate::toTimeString() const {
 }
 
 GoTSString* GoTSDate::toLocaleDateString() const {
-    return toDateString(); // Simplified - same as toDateString for now
+    // Enhanced locale-aware date formatting
+    // For now, implement basic formatting that can be extended with locale data
+    int64_t year, month, day, hour, minute, second, millisecond;
+    time_to_components(time_value, false, year, month, day, hour, minute, second, millisecond);
+    
+    // Default to a more user-friendly format (MM/DD/YYYY for US-style)
+    // In a full implementation, this would use system locale or accept locale parameter
+    char buffer[32];
+    snprintf(buffer, sizeof(buffer), "%02lld/%02lld/%04lld",
+             (long long)(month + 1), (long long)day, (long long)year);
+    
+    return new GoTSString(buffer);
 }
 
 GoTSString* GoTSDate::toLocaleTimeString() const {
-    return toTimeString(); // Simplified - same as toTimeString for now
+    // Enhanced locale-aware time formatting
+    int64_t year, month, day, hour, minute, second, millisecond;
+    time_to_components(time_value, false, year, month, day, hour, minute, second, millisecond);
+    
+    // Default to 12-hour format with AM/PM (US-style)
+    // In a full implementation, this would use system locale settings
+    int64_t display_hour = hour;
+    const char* ampm = "AM";
+    
+    if (hour == 0) {
+        display_hour = 12;
+    } else if (hour == 12) {
+        ampm = "PM";
+    } else if (hour > 12) {
+        display_hour = hour - 12;
+        ampm = "PM";
+    }
+    
+    char buffer[32];
+    snprintf(buffer, sizeof(buffer), "%lld:%02lld:%02lld %s",
+             (long long)display_hour, (long long)minute, (long long)second, ampm);
+    
+    return new GoTSString(buffer);
 }
 
 GoTSString* GoTSDate::toLocaleString() const {
-    return toString(); // Simplified - same as toString for now
+    // Enhanced locale-aware date and time formatting
+    int64_t year, month, day, hour, minute, second, millisecond;
+    time_to_components(time_value, false, year, month, day, hour, minute, second, millisecond);
+    
+    // Combine date and time in locale-friendly format
+    int64_t display_hour = hour;
+    const char* ampm = "AM";
+    
+    if (hour == 0) {
+        display_hour = 12;
+    } else if (hour == 12) {
+        ampm = "PM";
+    } else if (hour > 12) {
+        display_hour = hour - 12;
+        ampm = "PM";
+    }
+    
+    char buffer[64];
+    snprintf(buffer, sizeof(buffer), "%02lld/%02lld/%04lld, %lld:%02lld:%02lld %s",
+             (long long)(month + 1), (long long)day, (long long)year,
+             (long long)display_hour, (long long)minute, (long long)second, ampm);
+    
+    return new GoTSString(buffer);
 }
 
 GoTSString* GoTSDate::toJSON() const {
     return toISOString(); // JSON format is ISO string
+}
+
+// Deprecated methods (required for ECMAScript compliance)
+int64_t GoTSDate::getYear() const {
+    // getYear() returns year - 1900 (ECMAScript legacy method)
+    int64_t year, month, day, hour, minute, second, millisecond;
+    time_to_components(time_value, false, year, month, day, hour, minute, second, millisecond);
+    return year - 1900;
+}
+
+int64_t GoTSDate::setYear(int64_t year) {
+    // setYear() treats 0-99 as 1900-1999, larger values as absolute years
+    int64_t actual_year = year;
+    if (year >= 0 && year <= 99) {
+        actual_year = year + 1900;
+    }
+    
+    // Get current components
+    int64_t current_year, month, day, hour, minute, second, millisecond;
+    time_to_components(time_value, false, current_year, month, day, hour, minute, second, millisecond);
+    
+    // Set new year
+    time_value = components_to_time(actual_year, month, day, hour, minute, second, millisecond, false);
+    timezone_offset_cached = false;
+    return time_value;
+}
+
+GoTSString* GoTSDate::toGMTString() const {
+    // toGMTString() is deprecated, same as toUTCString()
+    return toUTCString();
+}
+
+// Moment.js-like methods for enhanced date manipulation
+GoTSDate GoTSDate::add(int64_t value, const char* unit) const {
+    if (!unit) return *this;
+    
+    std::string unit_str(unit);
+    int64_t millis_to_add = 0;
+    
+    // Convert unit to milliseconds
+    if (unit_str == "millisecond" || unit_str == "milliseconds" || unit_str == "ms") {
+        millis_to_add = value;
+    } else if (unit_str == "second" || unit_str == "seconds" || unit_str == "s") {
+        millis_to_add = value * 1000LL;
+    } else if (unit_str == "minute" || unit_str == "minutes" || unit_str == "m") {
+        millis_to_add = value * 60000LL;
+    } else if (unit_str == "hour" || unit_str == "hours" || unit_str == "h") {
+        millis_to_add = value * 3600000LL;
+    } else if (unit_str == "day" || unit_str == "days" || unit_str == "d") {
+        millis_to_add = value * 86400000LL;
+    } else if (unit_str == "week" || unit_str == "weeks" || unit_str == "w") {
+        millis_to_add = value * 604800000LL;
+    } else if (unit_str == "month" || unit_str == "months" || unit_str == "M") {
+        // For months, we need to work with date components
+        int64_t year, month, day, hour, minute, second, millisecond;
+        time_to_components(time_value, false, year, month, day, hour, minute, second, millisecond);
+        
+        month += value;
+        while (month < 0) {
+            month += 12;
+            year--;
+        }
+        while (month >= 12) {
+            month -= 12;
+            year++;
+        }
+        
+        // Handle day overflow (e.g., Jan 31 + 1 month should be Feb 28/29)
+        int64_t max_days = days_in_month(year, month);
+        if (day > max_days) {
+            day = max_days;
+        }
+        
+        return GoTSDate(year, month, day, hour, minute, second, millisecond);
+    } else if (unit_str == "year" || unit_str == "years" || unit_str == "y") {
+        // For years, work with date components
+        int64_t year, month, day, hour, minute, second, millisecond;
+        time_to_components(time_value, false, year, month, day, hour, minute, second, millisecond);
+        
+        year += value;
+        
+        // Handle leap year edge case (Feb 29 + 1 year)
+        if (month == 1 && day == 29 && !is_leap_year(year)) {
+            day = 28;
+        }
+        
+        return GoTSDate(year, month, day, hour, minute, second, millisecond);
+    }
+    
+    return GoTSDate(time_value + millis_to_add);
+}
+
+GoTSDate GoTSDate::subtract(int64_t value, const char* unit) const {
+    return add(-value, unit);
+}
+
+bool GoTSDate::isBefore(const GoTSDate& other) const {
+    return time_value < other.time_value;
+}
+
+bool GoTSDate::isAfter(const GoTSDate& other) const {
+    return time_value > other.time_value;
+}
+
+GoTSDate GoTSDate::clone() const {
+    return GoTSDate(time_value);
+}
+
+GoTSString* GoTSDate::format(const char* formatStr) const {
+    if (!formatStr) return toString();
+    
+    int64_t year, month, day, hour, minute, second, millisecond;
+    time_to_components(time_value, false, year, month, day, hour, minute, second, millisecond);
+    
+    std::string format(formatStr);
+    std::string result = format;
+    
+    // Basic moment.js format substitutions
+    char buffer[64];
+    
+    // Month names
+    const char* month_names[] = {"January", "February", "March", "April", "May", "June",
+                                "July", "August", "September", "October", "November", "December"};
+    const char* month_abbr[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                               "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    
+    // Weekday names
+    const char* weekday_names[] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+    const char* weekday_abbr[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+    
+    int64_t day_of_week_val = day_of_week(year, month, day);
+    
+    // Full month name (MMMM)
+    size_t pos = 0;
+    while ((pos = result.find("MMMM", pos)) != std::string::npos) {
+        result.replace(pos, 4, month_names[month]);
+        pos += strlen(month_names[month]);
+    }
+    
+    // Short month name (MMM)
+    pos = 0;
+    while ((pos = result.find("MMM", pos)) != std::string::npos) {
+        result.replace(pos, 3, month_abbr[month]);
+        pos += strlen(month_abbr[month]);
+    }
+    
+    // Full weekday name (dddd)
+    pos = 0;
+    while ((pos = result.find("dddd", pos)) != std::string::npos) {
+        result.replace(pos, 4, weekday_names[day_of_week_val]);
+        pos += strlen(weekday_names[day_of_week_val]);
+    }
+    
+    // Short weekday name (ddd)
+    pos = 0;
+    while ((pos = result.find("ddd", pos)) != std::string::npos) {
+        result.replace(pos, 3, weekday_abbr[day_of_week_val]);
+        pos += strlen(weekday_abbr[day_of_week_val]);
+    }
+    
+    // Year
+    snprintf(buffer, sizeof(buffer), "%04lld", (long long)year);
+    pos = 0;
+    while ((pos = result.find("YYYY", pos)) != std::string::npos) {
+        result.replace(pos, 4, buffer);
+        pos += strlen(buffer);
+    }
+    
+    snprintf(buffer, sizeof(buffer), "%02lld", (long long)(year % 100));
+    pos = 0;
+    while ((pos = result.find("YY", pos)) != std::string::npos) {
+        result.replace(pos, 2, buffer);
+        pos += strlen(buffer);
+    }
+    
+    // Month (MM and M)
+    snprintf(buffer, sizeof(buffer), "%02lld", (long long)(month + 1));
+    pos = 0;
+    while ((pos = result.find("MM", pos)) != std::string::npos) {
+        result.replace(pos, 2, buffer);
+        pos += strlen(buffer);
+    }
+    
+    snprintf(buffer, sizeof(buffer), "%lld", (long long)(month + 1));
+    pos = 0;
+    while ((pos = result.find("M", pos)) != std::string::npos) {
+        if (pos == 0 || result[pos-1] != 'M') { // Avoid replacing MM
+            result.replace(pos, 1, buffer);
+            pos += strlen(buffer);
+        } else {
+            pos++;
+        }
+    }
+    
+    // Day (DD and D)
+    snprintf(buffer, sizeof(buffer), "%02lld", (long long)day);
+    pos = 0;
+    while ((pos = result.find("DD", pos)) != std::string::npos) {
+        result.replace(pos, 2, buffer);
+        pos += strlen(buffer);
+    }
+    
+    snprintf(buffer, sizeof(buffer), "%lld", (long long)day);
+    pos = 0;
+    while ((pos = result.find("D", pos)) != std::string::npos) {
+        if (pos == 0 || result[pos-1] != 'D') { // Avoid replacing DD
+            result.replace(pos, 1, buffer);
+            pos += strlen(buffer);
+        } else {
+            pos++;
+        }
+    }
+    
+    // 12-hour format (hh and h)
+    int64_t hour_12 = hour == 0 ? 12 : (hour > 12 ? hour - 12 : hour);
+    snprintf(buffer, sizeof(buffer), "%02lld", (long long)hour_12);
+    pos = 0;
+    while ((pos = result.find("hh", pos)) != std::string::npos) {
+        result.replace(pos, 2, buffer);
+        pos += strlen(buffer);
+    }
+    
+    snprintf(buffer, sizeof(buffer), "%lld", (long long)hour_12);
+    pos = 0;
+    while ((pos = result.find("h", pos)) != std::string::npos) {
+        if (pos == 0 || result[pos-1] != 'h') { // Avoid replacing hh
+            result.replace(pos, 1, buffer);
+            pos += strlen(buffer);
+        } else {
+            pos++;
+        }
+    }
+    
+    // AM/PM
+    const char* ampm = hour < 12 ? "AM" : "PM";
+    const char* ampm_lower = hour < 12 ? "am" : "pm";
+    
+    pos = 0;
+    while ((pos = result.find("A", pos)) != std::string::npos) {
+        result.replace(pos, 1, ampm);
+        pos += strlen(ampm);
+    }
+    
+    pos = 0;
+    while ((pos = result.find("a", pos)) != std::string::npos) {
+        result.replace(pos, 1, ampm_lower);
+        pos += strlen(ampm_lower);
+    }
+    
+    // Hour (24-hour format HH and H)
+    snprintf(buffer, sizeof(buffer), "%02lld", (long long)hour);
+    pos = 0;
+    while ((pos = result.find("HH", pos)) != std::string::npos) {
+        result.replace(pos, 2, buffer);
+        pos += strlen(buffer);
+    }
+    
+    snprintf(buffer, sizeof(buffer), "%lld", (long long)hour);
+    pos = 0;
+    while ((pos = result.find("H", pos)) != std::string::npos) {
+        if (pos == 0 || result[pos-1] != 'H') { // Avoid replacing HH
+            result.replace(pos, 1, buffer);
+            pos += strlen(buffer);
+        } else {
+            pos++;
+        }
+    }
+    
+    // Minute
+    snprintf(buffer, sizeof(buffer), "%02lld", (long long)minute);
+    pos = 0;
+    while ((pos = result.find("mm", pos)) != std::string::npos) {
+        result.replace(pos, 2, buffer);
+        pos += strlen(buffer);
+    }
+    
+    // Second
+    snprintf(buffer, sizeof(buffer), "%02lld", (long long)second);
+    pos = 0;
+    while ((pos = result.find("ss", pos)) != std::string::npos) {
+        result.replace(pos, 2, buffer);
+        pos += strlen(buffer);
+    }
+    
+    // Millisecond
+    snprintf(buffer, sizeof(buffer), "%03lld", (long long)millisecond);
+    pos = 0;
+    while ((pos = result.find("SSS", pos)) != std::string::npos) {
+        result.replace(pos, 3, buffer);
+        pos += strlen(buffer);
+    }
+    
+    return new GoTSString(result.c_str());
 }
 
 // C Runtime Functions for Date - called from JIT-generated code
@@ -2098,6 +2800,10 @@ void* __date_create_from_components(int64_t year, int64_t month, int64_t day,
 
 void* __date_create_from_string(const char* dateString) {
     return new GoTSDate(dateString);
+}
+
+void* __date_create_from_string_with_timezone(const char* dateString, const char* timezone) {
+    return new GoTSDate(dateString, timezone);
 }
 
 void __date_destroy(void* date_ptr) {
@@ -2441,21 +3147,106 @@ int64_t __date_compare(void* date1_ptr, void* date2_ptr) {
     return 0;
 }
 
-// Regex runtime functions - minimal stub implementation
-// These provide basic regex support for testing regex literal parsing
-struct SimpleRegex {
-    std::string pattern;
-    std::string flags;
-    SimpleRegex(const std::string& p, const std::string& f) : pattern(p), flags(f) {}
-};
+// Deprecated Date methods (required for ECMAScript compliance)
+int64_t __date_getYear(void* date_ptr) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->getYear();
+    }
+    return 0;
+}
+
+int64_t __date_setYear(void* date_ptr, int64_t year) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->setYear(year);
+    }
+    return 0;
+}
+
+void* __date_toGMTString(void* date_ptr) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->toGMTString();
+    }
+    return new GoTSString("");
+}
+
+// Date function call (not constructor) - returns string representation
+void* __date_call() {
+    // When Date() is called as a function (not constructor), it returns current date as string
+    GoTSDate current_date;
+    return current_date.toString();
+}
+
+// Date constructor functions for JIT integration
+void* __constructor_Date() {
+    return __date_create();
+}
+
+void* __constructor_Date_1(int64_t arg1) {
+    return __date_create_from_millis(arg1);
+}
+
+void* __constructor_Date_3(int64_t year, int64_t month, int64_t day) {
+    return __date_create_from_components(year, month, day, 0, 0, 0, 0);
+}
+
+void* __constructor_Date_7(int64_t year, int64_t month, int64_t day, int64_t hour, int64_t minute, int64_t second, int64_t millisecond) {
+    return __date_create_from_components(year, month, day, hour, minute, second, millisecond);
+}
+
+// Moment.js-like methods for enhanced date manipulation
+void* __date_add(void* date_ptr, int64_t value, const char* unit) {
+    if (date_ptr && unit) {
+        GoTSDate result = static_cast<GoTSDate*>(date_ptr)->add(value, unit);
+        return new GoTSDate(result);
+    }
+    return new GoTSDate();
+}
+
+void* __date_subtract(void* date_ptr, int64_t value, const char* unit) {
+    if (date_ptr && unit) {
+        GoTSDate result = static_cast<GoTSDate*>(date_ptr)->subtract(value, unit);
+        return new GoTSDate(result);
+    }
+    return new GoTSDate();
+}
+
+bool __date_isBefore(void* date_ptr, void* other_ptr) {
+    if (date_ptr && other_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->isBefore(*static_cast<GoTSDate*>(other_ptr));
+    }
+    return false;
+}
+
+bool __date_isAfter(void* date_ptr, void* other_ptr) {
+    if (date_ptr && other_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->isAfter(*static_cast<GoTSDate*>(other_ptr));
+    }
+    return false;
+}
+
+void* __date_clone(void* date_ptr) {
+    if (date_ptr) {
+        GoTSDate result = static_cast<GoTSDate*>(date_ptr)->clone();
+        return new GoTSDate(result);
+    }
+    return new GoTSDate();
+}
+
+void* __date_format(void* date_ptr, const char* formatStr) {
+    if (date_ptr) {
+        return static_cast<GoTSDate*>(date_ptr)->format(formatStr);
+    }
+    return new GoTSString("");
+}
 
 extern "C" void* __regex_create(const char* pattern, const char* flags) {
     if (!pattern) return nullptr;
     try {
-        // Use static allocation to avoid heap-related segfaults
-        static std::vector<SimpleRegex> regex_storage;
-        regex_storage.emplace_back(pattern, flags ? flags : "");
-        return static_cast<void*>(&regex_storage.back());
+        // Create a proper regex engine instance
+        std::string pattern_str(pattern);
+        std::string flags_str(flags ? flags : "");
+        gots::GoTSRegExp* regex = new gots::GoTSRegExp(pattern_str, flags_str);
+        return static_cast<void*>(regex);
     } catch (...) {
         return nullptr;
     }
@@ -2475,22 +3266,40 @@ static std::unordered_map<int, std::string> global_pattern_registry = {
     {10, "\\s+"}
 };
 
+// This function is now defined later in the file
+
+extern "C" void __debug_print_pointer(void* ptr) {
+    std::cout << "DEBUG: Loaded pointer value: " << ptr << std::endl;
+}
+
+// Register regex pattern for later use
+extern "C" int64_t __register_regex_pattern(const char* pattern) {
+    static int64_t next_pattern_id = 1;
+    int64_t pattern_id = next_pattern_id++;
+    global_pattern_registry[pattern_id] = std::string(pattern);
+    std::cout << "DEBUG: Registered pattern ID " << pattern_id << " with pattern '" << pattern << "'" << std::endl;
+    return pattern_id;
+}
+
 extern "C" void* __regex_create_by_id(int pattern_id) {
     // Look up pattern by ID
     auto it = global_pattern_registry.find(pattern_id);
     if (it == global_pattern_registry.end()) {
+        std::cout << "DEBUG: Pattern ID " << pattern_id << " not found in registry" << std::endl;
         return nullptr;
     }
     
     const std::string& pattern = it->second;
+    std::cout << "DEBUG: Creating regex for pattern ID " << pattern_id << " with pattern '" << pattern << "'" << std::endl;
     
     try {
-        // Use static allocation to avoid heap-related segfaults
-        static std::vector<SimpleRegex> regex_storage;
-        regex_storage.emplace_back(pattern, "");
-        void* result = static_cast<void*>(&regex_storage.back());
+        // Create a proper regex engine instance
+        gots::GoTSRegExp* regex = new gots::GoTSRegExp(pattern, "");
+        void* result = static_cast<void*>(regex);
+        std::cout << "DEBUG: Created regex at " << result << " with pattern '" << pattern << "'" << std::endl;
         return result;
     } catch (...) {
+        std::cout << "DEBUG: Exception creating regex" << std::endl;
         return nullptr;
     }
 }
@@ -2500,30 +3309,30 @@ extern "C" void* __regex_create_simple(const char* pattern) {
         return nullptr;
     }
     try {
-        // Use static allocation to avoid heap-related segfaults
-        static std::vector<SimpleRegex> regex_storage;
-        regex_storage.emplace_back(pattern, "");
-        void* result = static_cast<void*>(&regex_storage.back());
-        return result;
+        // Create a proper regex engine instance
+        gots::GoTSRegExp* regex = new gots::GoTSRegExp(pattern, "");
+        return static_cast<void*>(regex);
     } catch (...) {
         return nullptr;
     }
 }
 
 extern "C" void __regex_destroy(void* regex_ptr) {
-    // Do nothing for static allocation - objects are managed by the static vector
-    (void)regex_ptr;
+    if (regex_ptr) {
+        delete static_cast<gots::GoTSRegExp*>(regex_ptr);
+    }
 }
 
 extern "C" bool __regex_test(void* regex_ptr, const char* text) {
     if (!regex_ptr || !text) return false;
     
     try {
-        SimpleRegex* regex = static_cast<SimpleRegex*>(regex_ptr);
-        // Simple substring match for basic testing
-        std::string text_str(text);
-        return text_str.find(regex->pattern) != std::string::npos;
+        gots::GoTSRegExp* regex = static_cast<gots::GoTSRegExp*>(regex_ptr);
+        bool result = regex->test(text);
+        std::cout << "DEBUG: Regex test result: " << result << std::endl;
+        return result;
     } catch (...) {
+        std::cout << "DEBUG: Exception in __regex_test" << std::endl;
         return false;
     }
 }
@@ -2532,11 +3341,24 @@ extern "C" void* __regex_exec(void* regex_ptr, const char* text) {
     if (!regex_ptr || !text) return nullptr;
     
     try {
-        SimpleRegex* regex = static_cast<SimpleRegex*>(regex_ptr);
-        // Simple substring match for basic testing
-        std::string text_str(text);
-        bool found = text_str.find(regex->pattern) != std::string::npos;
-        return found ? reinterpret_cast<void*>(1) : nullptr;
+        gots::GoTSRegExp* regex = static_cast<gots::GoTSRegExp*>(regex_ptr);
+        // Use the full regex engine exec method
+        gots::RegexMatch match = regex->exec(text);
+        
+        if (match.is_valid()) {
+            // Create a MatchArray with the match result
+            MatchArray* match_array = new MatchArray(match.groups.size(), text, match.matched_text, match.start);
+            
+            // Add all captured groups to the array
+            for (const auto& group : match.groups) {
+                GoTSString* match_str = new GoTSString(group.matched_text.c_str());
+                match_array->push(reinterpret_cast<int64_t>(match_str));
+            }
+            
+            return static_cast<void*>(match_array);
+        } else {
+            return nullptr; // No match
+        }
     } catch (...) {
         return nullptr;
     }
@@ -2546,10 +3368,10 @@ extern "C" void* __regex_match_all(void* regex_ptr, const char* text) {
     if (!regex_ptr || !text) return nullptr;
     
     try {
-        SimpleRegex* regex = static_cast<SimpleRegex*>(regex_ptr);
-        // Simple substring match for basic testing
-        std::string text_str(text);
-        bool found = text_str.find(regex->pattern) != std::string::npos;
+        gots::GoTSRegExp* regex = static_cast<gots::GoTSRegExp*>(regex_ptr);
+        
+        // Use the full regex engine for global matching
+        bool found = regex->test(text);
         return found ? reinterpret_cast<void*>(1) : nullptr;
     } catch (...) {
         return nullptr;
@@ -2562,26 +3384,40 @@ extern "C" void* __string_match(void* string_ptr, void* regex_ptr) {
     
     try {
         GoTSString* str = static_cast<GoTSString*>(string_ptr);
-        SimpleRegex* regex = static_cast<SimpleRegex*>(regex_ptr);
+        gots::GoTSRegExp* regex = static_cast<gots::GoTSRegExp*>(regex_ptr);
         
-        // Simple substring match for basic functionality
         std::string text(str->c_str());
-        size_t pos = text.find(regex->pattern);
-        bool found = pos != std::string::npos;
+        std::cout << "DEBUG: __string_match text='" << text << "' pattern='" << regex->source() << "'" << std::endl;
         
-        if (found) {
-            // Create a high-performance MatchArray with lazy JavaScript properties
-            MatchArray* match_array = new MatchArray(1, text, regex->pattern, pos);
-            
-            // Add the matched text as a string pointer
-            GoTSString* match_str = new GoTSString(regex->pattern.c_str());
-            match_array->push(reinterpret_cast<int64_t>(match_str));
-            
-            return static_cast<void*>(match_array);
+        // Use the proper RegexEngine for matching
+        const gots::RegexEngine* engine = regex->get_engine();
+        if (!engine) {
+            std::cout << "DEBUG: No regex engine available" << std::endl;
+            return nullptr;
         }
         
-        return nullptr; // No match
+        // Perform the match using the real regex engine
+        gots::RegexMatch match = engine->exec(text);
+        
+        if (!match.is_valid()) {
+            std::cout << "DEBUG: No match found" << std::endl;
+            return nullptr;
+        }
+        
+        std::cout << "DEBUG: Match found: '" << match.matched_text << "' at position " << match.start << std::endl;
+        
+        // Create result array compatible with existing runtime
+        MatchArray* match_array = new MatchArray(1, text, regex->source(), match.start);
+        GoTSString* match_str = new GoTSString(match.matched_text.c_str());
+        match_array->push(reinterpret_cast<int64_t>(match_str));
+        
+        return static_cast<void*>(match_array);
+        
+    } catch (const std::exception& e) {
+        std::cout << "DEBUG: Exception in __string_match: " << e.what() << std::endl;
+        return nullptr;
     } catch (...) {
+        std::cout << "DEBUG: Unknown exception in __string_match" << std::endl;
         return nullptr;
     }
 }
@@ -2628,11 +3464,11 @@ extern "C" void* __string_replace(void* string_ptr, void* pattern_ptr, void* rep
         std::string repl(replacement->c_str());
         
         // Try to cast pattern as regex first, then as string
-        SimpleRegex* regex = static_cast<SimpleRegex*>(pattern_ptr);
+        gots::GoTSRegExp* regex = static_cast<gots::GoTSRegExp*>(pattern_ptr);
         std::string pattern;
         
-        if (regex && !regex->pattern.empty()) {
-            pattern = regex->pattern;
+        if (regex && !regex->source().empty()) {
+            pattern = regex->source();
         } else {
             GoTSString* pattern_str = static_cast<GoTSString*>(pattern_ptr);
             pattern = std::string(pattern_str->c_str());
@@ -2656,12 +3492,12 @@ extern "C" int64_t __string_search(void* string_ptr, void* regex_ptr) {
     
     try {
         GoTSString* str = static_cast<GoTSString*>(string_ptr);
-        SimpleRegex* regex = static_cast<SimpleRegex*>(regex_ptr);
+        gots::GoTSRegExp* regex = static_cast<gots::GoTSRegExp*>(regex_ptr);
         
         std::string text(str->c_str());
-        size_t pos = text.find(regex->pattern);
+        gots::RegexMatch match = regex->exec(text);
         
-        return pos != std::string::npos ? static_cast<int64_t>(pos) : -1;
+        return match.is_valid() ? static_cast<int64_t>(match.start) : -1;
     } catch (...) {
         return -1;
     }
@@ -2691,17 +3527,17 @@ extern "C" void* __string_split(void* string_ptr, void* delimiter_ptr) {
             size_t start = 0;
             size_t end = text.find(delimiter);
             
-            while (end != std::string::npos) {
-                std::string part = text.substr(start, end - start);
+            while (end != ::std::string::npos) {
+                ::std::string part = text.substr(start, end - start);
                 // Store string hash for simplicity (in real implementation would store string objects)
-                result->push(static_cast<int64_t>(std::hash<std::string>{}(part) % 1000000));
+                result->push(static_cast<int64_t>(::std::hash<::std::string>{}(part) % 1000000));
                 start = end + delimiter.length();
                 end = text.find(delimiter, start);
             }
             
             // Add the last part
-            std::string part = text.substr(start);
-            result->push(static_cast<int64_t>(std::hash<std::string>{}(part) % 1000000));
+            ::std::string part = text.substr(start);
+            result->push(static_cast<int64_t>(::std::hash<::std::string>{}(part) % 1000000));
         }
         
         return static_cast<void*>(result);
@@ -2718,8 +3554,8 @@ extern "C" void* __regex_get_source(void* regex_ptr) {
     if (!regex_ptr) return nullptr;
     
     try {
-        SimpleRegex* regex = static_cast<SimpleRegex*>(regex_ptr);
-        return static_cast<void*>(new GoTSString(regex->pattern.c_str()));
+        gots::GoTSRegExp* regex = static_cast<gots::GoTSRegExp*>(regex_ptr);
+        return static_cast<void*>(new GoTSString(regex->source().c_str()));
     } catch (...) {
         return nullptr;
     }
@@ -2729,8 +3565,8 @@ extern "C" bool __regex_get_global(void* regex_ptr) {
     if (!regex_ptr) return false;
     
     try {
-        SimpleRegex* regex = static_cast<SimpleRegex*>(regex_ptr);
-        return regex->flags.find('g') != std::string::npos;
+        gots::GoTSRegExp* regex = static_cast<gots::GoTSRegExp*>(regex_ptr);
+        return regex->global();
     } catch (...) {
         return false;
     }
@@ -2740,8 +3576,8 @@ extern "C" bool __regex_get_ignore_case(void* regex_ptr) {
     if (!regex_ptr) return false;
     
     try {
-        SimpleRegex* regex = static_cast<SimpleRegex*>(regex_ptr);
-        return regex->flags.find('i') != std::string::npos;
+        gots::GoTSRegExp* regex = static_cast<gots::GoTSRegExp*>(regex_ptr);
+        return regex->ignoreCase();
     } catch (...) {
         return false;
     }
@@ -2758,6 +3594,152 @@ extern "C" void* __dynamic_get_property(void* object_ptr, const char* property_n
         return reinterpret_cast<void*>(42); // Dummy return value
     } catch (...) {
         return nullptr;
+    }
+}
+
+// High-Performance Timer Manager Implementation using direct function pointers
+int64_t MainThreadTimerManager::add_timer(int64_t delay_ms, const std::string& function_name, bool is_interval) {
+    std::cout << "DEBUG: add_timer called with delay=" << delay_ms << " function_name=" << function_name << std::endl;
+    
+    int64_t timer_id = next_timer_id.fetch_add(1);
+    auto execute_time = std::chrono::steady_clock::now() + 
+                       std::chrono::milliseconds(delay_ms);
+    
+    {
+        std::lock_guard<std::mutex> lock(timer_mutex);
+        
+        // Create timer entry with function name to avoid JIT invalidation
+        MainThreadTimerEntry entry;
+        entry.id = timer_id;
+        entry.execute_time = execute_time;
+        entry.callback_function_name = function_name;
+        entry.is_interval = is_interval;
+        entry.interval_ms = delay_ms;
+        
+        std::cout << "DEBUG: Created timer entry id=" << timer_id << " function=" << function_name << std::endl;
+        
+        if (is_interval) {
+            interval_timers[timer_id] = entry;
+        }
+        
+        timer_queue.emplace(entry);
+        active_timer_count.fetch_add(1);
+        
+        std::cout << "DEBUG: Added timer to queue, active_count=" << active_timer_count.load() << std::endl;
+    }
+    
+    // Only notify timer event loop if main execution is complete
+    if (!main_execution_active.load()) {
+        timer_cv.notify_one();
+        std::cout << "DEBUG: Timer event loop notified" << std::endl;
+    } else {
+        std::cout << "DEBUG: Timer scheduled but event loop not notified (main execution active)" << std::endl;
+    }
+    
+    std::cout << "DEBUG: Timer " << timer_id << " scheduled successfully" << std::endl;
+    return timer_id;
+}
+
+
+void MainThreadTimerManager::run_main_event_loop() {
+    // Wait for main execution to complete before starting timer event loop
+    {
+        std::unique_lock<std::mutex> lock(timer_mutex);
+        timer_cv.wait(lock, [this]() { 
+            return !main_execution_active.load() || !running.load();
+        });
+    }
+    
+    std::cout << "DEBUG: Timer event loop starting after main execution completed" << std::endl;
+    
+    while (running.load() && active_timer_count.load() > 0) {
+        std::unique_lock<std::mutex> lock(timer_mutex);
+        
+        if (timer_queue.empty()) {
+            // Wait for new timers or shutdown
+            timer_cv.wait_for(lock, std::chrono::milliseconds(100), [this]() { 
+                return !timer_queue.empty() || !running.load(); 
+            });
+            continue;
+        }
+        
+        auto now = std::chrono::steady_clock::now();
+        auto next_timer = timer_queue.top();
+        
+        if (next_timer.execute_time <= now) {
+            timer_queue.pop();
+            
+            // Check if timer was cancelled
+            if (cancelled_timers.find(next_timer.id) != cancelled_timers.end()) {
+                cancelled_timers.erase(next_timer.id);
+                active_timer_count.fetch_sub(1);
+                continue;
+            }
+            
+            // For interval timers, reschedule before execution
+            if (next_timer.is_interval) {
+                auto it = interval_timers.find(next_timer.id);
+                if (it != interval_timers.end()) {
+                    // Reschedule interval timer
+                    next_timer.execute_time = std::chrono::steady_clock::now() + 
+                                            std::chrono::milliseconds(next_timer.interval_ms);
+                    timer_queue.push(next_timer);
+                } else {
+                    // Interval was cancelled, don't reschedule
+                    active_timer_count.fetch_sub(1);
+                    continue;
+                }
+            } else {
+                active_timer_count.fetch_sub(1);
+            }
+            
+            // Execute callback in goroutine using function name lookup (avoiding JIT invalidation)
+            std::string function_name = next_timer.callback_function_name;
+            int64_t timer_id = next_timer.id;
+            
+            lock.unlock();
+            
+            std::cout << "DEBUG: Executing timer " << timer_id << " function=" << function_name << std::endl;
+            
+            if (scheduler && !function_name.empty()) {
+                scheduler->spawn([function_name, timer_id]() -> int64_t {
+                    try {
+                        std::cout << "DEBUG: Timer " << timer_id << " executing function " << function_name << " in goroutine" << std::endl;
+                        
+                        // Look up function in registry
+                        extern std::unordered_map<std::string, void*> gots_function_registry;
+                        auto it = gots_function_registry.find(function_name);
+                        if (it == gots_function_registry.end()) {
+                            std::cerr << "ERROR: Timer " << timer_id << " - function " << function_name << " not found in registry" << std::endl;
+                            return -1;
+                        }
+                        
+                        // Cast and call the function
+                        typedef int64_t (*timer_callback_t)();
+                        timer_callback_t callback_func = reinterpret_cast<timer_callback_t>(it->second);
+                        
+                        int64_t result = callback_func();
+                        std::cout << "DEBUG: Timer " << timer_id << " callback completed with result=" << result << std::endl;
+                        return result;
+                    } catch (const std::exception& e) {
+                        std::cerr << "ERROR: Timer " << timer_id << " callback exception: " << e.what() << std::endl;
+                        return -1;
+                    } catch (...) {
+                        std::cerr << "ERROR: Timer " << timer_id << " unknown exception" << std::endl;
+                        return -1;
+                    }
+                });
+            } else {
+                std::cerr << "ERROR: Timer " << timer_id << " - no scheduler or function name" << std::endl;
+            }
+        } else {
+            // Wait until next timer is ready
+            auto wait_time = next_timer.execute_time - now;
+            timer_cv.wait_for(lock, wait_time, [this]() {
+                return !running.load() || 
+                       (!timer_queue.empty() && timer_queue.top().execute_time <= std::chrono::steady_clock::now());
+            });
+        }
     }
 }
 

@@ -1,5 +1,6 @@
 #include "compiler.h"
 #include "runtime.h"
+#include "runtime_syscalls.h"
 #include <fstream>
 #include <iostream>
 #include <sys/mman.h>
@@ -7,6 +8,10 @@
 #include <cstring>
 #include <thread>
 #include <chrono>
+
+// Forward declaration of runtime registration function
+extern "C" void __runtime_register_global();
+extern "C" void __runtime_process_deferred_timers();
 
 namespace gots {
 
@@ -29,17 +34,23 @@ void GoTSCompiler::set_backend(Backend backend) {
 
 void GoTSCompiler::compile(const std::string& source) {
     try {
-        Lexer lexer(source);
+        // Create error reporter with source code and file path
+        ErrorReporter error_reporter(source, current_file_path);
+        
+        Lexer lexer(source, &error_reporter);
         auto tokens = lexer.tokenize();
         
         std::cout << "Tokens generated: " << tokens.size() << std::endl;
         
-        Parser parser(std::move(tokens));
+        Parser parser(std::move(tokens), &error_reporter);
         auto ast = parser.parse();
         
         std::cout << "AST nodes: " << ast.size() << std::endl;
         
         codegen->clear();
+        
+        // Register runtime functions before code generation so they're available during emit_call
+        __runtime_register_global();
         
         // Set the compiler context for constructor code generation
         ConstructorDecl::set_compiler_context(this);
@@ -189,14 +200,17 @@ void GoTSCompiler::execute() {
         
         __runtime_init();
         
+        // Register the global runtime object for syscall access
+        __runtime_register_global();
+        
         // Register all functions in the runtime registry
         auto& label_offsets = codegen->get_label_offsets();
         for (const auto& label : label_offsets) {
             const std::string& name = label.first;
             int64_t offset = label.second;
             
-            // Skip internal labels like __main, but allow static method labels
-            if (name.find("__") == 0 && name.find("__static_") != 0) continue;
+            // Skip internal labels like __main, but allow static method labels and function expressions
+            if (name.find("__") == 0 && name.find("__static_") != 0 && name.find("__func_expr_") != 0) continue;
             
             // Calculate actual function address
             void* func_addr = reinterpret_cast<void*>(
@@ -225,15 +239,41 @@ void GoTSCompiler::execute() {
         int result = 0;
         try {
             result = func();
-            std::cout << "Program executed successfully. Result: " << result << std::endl;
+            std::cout << "DEBUG: Main function returned with result: " << result << std::endl;
+            std::cout << "DEBUG: About to mark main execution complete..." << std::endl;
+            std::cout.flush(); // Force output immediately
+            
+            // Mark main execution complete to allow timer processing
+            extern gots::MainThreadTimerManager* g_main_timer_manager;
+            std::cout << "DEBUG: g_main_timer_manager pointer: " << g_main_timer_manager << std::endl;
+            if (g_main_timer_manager) {
+                std::cout << "DEBUG: About to call mark_main_execution_complete" << std::endl;
+                g_main_timer_manager->mark_main_execution_complete();
+                std::cout << "DEBUG: mark_main_execution_complete completed" << std::endl;
+                
+                // Process any deferred timers that were registered during main execution
+                std::cout << "DEBUG: Processing deferred timers" << std::endl;
+                extern void __runtime_process_deferred_timers();
+                __runtime_process_deferred_timers();
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "Exception caught during program execution: " << e.what() << std::endl;
         } catch (...) {
-            std::cerr << "Exception caught during program execution" << std::endl;
+            std::cerr << "Unknown exception caught during program execution" << std::endl;
         }
         
-        // Give threads time to complete before cleanup
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        std::cout << "DEBUG: About to wait for timers before cleanup" << std::endl;
+        // Wait for all active timers to complete before cleanup
+        __runtime_timer_wait_all();
+        std::cout << "DEBUG: Timer wait completed" << std::endl;
         
+        std::cout << "DEBUG: About to call __runtime_timer_cleanup()" << std::endl;
+        __runtime_timer_cleanup();
+        std::cout << "DEBUG: __runtime_timer_cleanup() completed" << std::endl;
+        
+        std::cout << "DEBUG: About to call __runtime_cleanup()" << std::endl;
         __runtime_cleanup();
+        std::cout << "DEBUG: __runtime_cleanup() completed" << std::endl;
         
         // DON'T FREE THE EXECUTABLE MEMORY - it's needed for goroutine function calls
         // The registered functions in the function registry depend on this memory
