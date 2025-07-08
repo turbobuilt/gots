@@ -2,6 +2,14 @@
 #include "runtime.h"
 #include "runtime_object.h"
 
+// Forward declarations for new goroutine system
+extern "C" {
+    int64_t __gots_set_timeout(void* callback, int64_t delay_ms);
+    int64_t __gots_set_interval(void* callback, int64_t delay_ms);  
+    bool __gots_clear_timeout(int64_t timer_id);
+    bool __gots_clear_interval(int64_t timer_id);
+}
+
 // Forward declarations for simplified timer system
 extern std::atomic<int64_t> g_timer_id_counter;
 extern std::atomic<int64_t> g_active_timer_count;
@@ -1109,13 +1117,10 @@ static std::mutex deferred_mutex;
 // Timer management is now handled by MainThreadTimerManager
 
 int64_t __runtime_timer_set_timeout(void* callback, int64_t delay) {
-    std::cout << "DEBUG: __runtime_timer_set_timeout called with callback=" << callback << ", delay=" << delay << " (new timer system)!" << std::endl;
+    std::cout << "DEBUG: __runtime_timer_set_timeout called with callback=" << callback << ", delay=" << delay << std::endl;
     
-    // Use new timer system that adds to current goroutine's queue
-    int64_t timer_id = create_timer_new(delay, callback, false);
-    
-    std::cout << "DEBUG: Timer " << timer_id << " created with " << delay << "ms delay using new system" << std::endl;
-    return timer_id;
+    // Use new goroutine timer system
+    return __gots_set_timeout(callback, delay);
 }
 
 // Function to wait for all active timers to complete

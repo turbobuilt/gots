@@ -410,4 +410,39 @@ bool __gots_clear_interval(int64_t timer_id) {
 
 } // extern "C"
 
+// Bridge functions for integration with old runtime
+extern "C" {
+
+void __new_goroutine_system_init() {
+    std::cout << "DEBUG: Initializing new goroutine system bridge" << std::endl;
+    
+    // Create main goroutine for the main thread
+    auto main_task = []() {};
+    auto main_goroutine = std::make_shared<gots::Goroutine>(0, main_task, nullptr);
+    gots::GoroutineScheduler::instance().set_main_goroutine(main_goroutine);
+    gots::current_goroutine = main_goroutine;
+}
+
+void __new_goroutine_system_cleanup() {
+    std::cout << "DEBUG: Cleaning up new goroutine system bridge" << std::endl;
+    gots::GoroutineScheduler::instance().wait_all();
+}
+
+void __new_goroutine_spawn(void* func_ptr) {
+    std::cout << "DEBUG: Spawning goroutine via bridge" << std::endl;
+    
+    // Create task
+    auto task = [func_ptr]() {
+        std::cout << "DEBUG: Executing goroutine function in new system" << std::endl;
+        typedef void (*FuncType)();
+        FuncType func = reinterpret_cast<FuncType>(func_ptr);
+        func();
+    };
+    
+    // Spawn goroutine
+    gots::GoroutineScheduler::instance().spawn(task);
+}
+
+} // extern "C"
+
 } // namespace gots

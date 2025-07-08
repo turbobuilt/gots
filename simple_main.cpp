@@ -15,6 +15,8 @@ using namespace gots;
 
 // Forward declaration for timer functions
 extern "C" void __runtime_timer_wait_all();
+extern "C" void __runtime_init();
+extern "C" void __runtime_cleanup();
 
 std::atomic<bool> should_restart(false);
 std::atomic<bool> watch_mode(false);
@@ -173,6 +175,9 @@ public:
 
 void run_program(const std::string& filename) {
     try {
+        // Initialize the new goroutine system
+        __runtime_init();
+        
         // Read and execute program normally on main thread
         std::string program = read_file(filename);
         
@@ -181,30 +186,9 @@ void run_program(const std::string& filename) {
         compiler.compile(program);
         compiler.execute();
         
-        // After main execution, wait for active goroutines and timers
+        // After main execution, wait for active goroutines and timers using new system
         std::cout << "DEBUG: Main execution completed, waiting for active work..." << std::endl;
-        
-        // Wait for all active goroutines to complete FIRST
-        while (gots::GoroutineScheduler::instance().has_active_goroutines()) {
-            std::cout << "DEBUG: Active goroutines: " << gots::g_active_goroutine_count.load() << std::endl;
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        }
-        
-        std::cout << "DEBUG: All goroutines completed, now checking for timers..." << std::endl;
-        
-        // THEN process timers (which may have been created by goroutines)
-        while (gots::g_active_timer_count.load() > 0) {
-            std::cout << "DEBUG: Active timers: " << gots::g_active_timer_count.load() << ", waiting..." << std::endl;
-            __runtime_timer_wait_all();
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        }
-        
-        std::cout << "DEBUG: All work completed, program can exit" << std::endl;
-        
-        // Cleanup runtime resources after all work is done
-        std::cout << "DEBUG: About to call __runtime_cleanup" << std::endl;
         __runtime_cleanup();
-        std::cout << "DEBUG: __runtime_cleanup completed" << std::endl;
         
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << std::endl;
