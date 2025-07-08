@@ -1,4 +1,5 @@
-console.log(runtime.time.now());
-runtime.timer.setTimeout(function() {
-    console.log("time has passed")
-}, 3000);
+go function() {
+    setTimeout(function() {
+        console.log("Go timeout done")
+    }, 4000)
+}

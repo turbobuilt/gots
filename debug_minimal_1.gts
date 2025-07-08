@@ -1,1 +1,0 @@
-// Minimal test 1: Empty program

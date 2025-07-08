@@ -2,8 +2,28 @@
 #include "runtime.h"
 #include "runtime_object.h"
 
-// Forward declaration of global timer manager
-extern gots::MainThreadTimerManager* g_main_timer_manager;
+// Forward declarations for simplified timer system
+extern std::atomic<int64_t> g_timer_id_counter;
+extern std::atomic<int64_t> g_active_timer_count;
+extern std::atomic<int64_t> g_active_goroutine_count;
+
+// Simple timer functions
+int64_t create_timer(int64_t delay_ms, void* callback, bool is_interval = false);
+bool has_active_timers();
+bool has_active_work();
+
+// Forward declarations for new timer system
+namespace gots {
+    class GoroutineTimerManager;
+    GoroutineTimerManager& get_timer_manager();
+    extern thread_local std::unique_ptr<GoroutineTimerManager> g_thread_timer_manager;
+}
+
+// New timer system functions
+int64_t create_timer_new(int64_t delay_ms, void* callback, bool is_interval = false);
+bool cancel_timer_new(int64_t timer_id);
+bool has_active_timers_new();
+bool has_active_work_new();
 #include <chrono>
 #include <thread>
 #include <ctime>
@@ -1089,119 +1109,51 @@ static std::mutex deferred_mutex;
 // Timer management is now handled by MainThreadTimerManager
 
 int64_t __runtime_timer_set_timeout(void* callback, int64_t delay) {
-    std::cout << "DEBUG: __runtime_timer_set_timeout called!" << std::endl;
+    std::cout << "DEBUG: __runtime_timer_set_timeout called with callback=" << callback << ", delay=" << delay << " (new timer system)!" << std::endl;
     
-    // SOLUTION: During main execution, just return success without actually scheduling
-    // This prevents JIT function registration that corrupts main function return
-    extern gots::MainThreadTimerManager* g_main_timer_manager;
-    if (!g_main_timer_manager) {
-        std::cout << "DEBUG: Timer manager is null!" << std::endl;
-        return -1;
-    }
+    // Use new timer system that adds to current goroutine's queue
+    int64_t timer_id = create_timer_new(delay, callback, false);
     
-    if (g_main_timer_manager->main_execution_active.load()) {
-        std::cout << "DEBUG: Main execution active - storing setTimeout request for later processing" << std::endl;
-        
-        int64_t callback_value = reinterpret_cast<int64_t>(callback);
-        
-        // Check if this is a valid function pointer (should be in a reasonable memory range)
-        if (callback_value > 0x400000 && callback_value < 0x800000000000LL) {
-            std::cout << "DEBUG: Detected function pointer: " << std::hex << callback_value << std::dec << std::endl;
-        } else {
-            std::cout << "DEBUG: Detected function ID or other value: " << callback_value << std::endl;
-        }
-        
-        {
-            std::lock_guard<std::mutex> lock(deferred_mutex);
-            deferred_timer_requests.push_back({delay, callback_value});
-        }
-        
-        std::cout << "DEBUG: Timer request stored for later processing (delay=" << delay << ", callback_id=" << callback_value << ")" << std::endl;
-        return 1; // Return success - timer will be processed later
-    }
-    
-    // If we reach here, main execution is complete and it's safe to schedule timers
-    std::cout << "DEBUG: Main execution complete - processing setTimeout normally" << std::endl;
-    
-    // Get callback function ID and look up function name
-    int64_t callback_value = reinterpret_cast<int64_t>(callback);
-    std::cout << "DEBUG: Callback value=" << callback_value << std::endl;
-    
-    // Look up function name from function ID
-    const char* function_name = __lookup_function_name_by_id(callback_value);
-    if (!function_name) {
-        std::cout << "DEBUG: Function name lookup failed for ID=" << callback_value << std::endl;
-        return -1;
-    }
-    
-    std::string func_name_str(function_name);
-    std::cout << "DEBUG: Using function name=" << func_name_str << std::endl;
-    
-    // Schedule timer with the timer manager using function name
-    int64_t result = g_main_timer_manager->add_timer(delay, func_name_str, false);
-    std::cout << "DEBUG: add_timer returned=" << result << std::endl;
-    return result;
+    std::cout << "DEBUG: Timer " << timer_id << " created with " << delay << "ms delay using new system" << std::endl;
+    return timer_id;
 }
 
 // Function to wait for all active timers to complete
 void __runtime_timer_wait_all() {
-    // Timer manager handles waiting in its event loop
-    // No need for explicit waits here
+    std::cout << "DEBUG: __runtime_timer_wait_all called (new timer system)!" << std::endl;
+    std::cout.flush();
+    
+    try {
+        // Start timer processing for current goroutine
+        gots::GoroutineTimerManager& manager = gots::get_timer_manager();
+        std::cout << "DEBUG: Got timer manager, starting processing..." << std::endl;
+        manager.process_timers();
+        std::cout << "DEBUG: Timer processing completed for current goroutine" << std::endl;
+    } catch (const std::exception& e) {
+        std::cerr << "ERROR: Exception in timer processing: " << e.what() << std::endl;
+    } catch (...) {
+        std::cerr << "ERROR: Unknown exception in timer processing" << std::endl;
+    }
 }
 
 // Add this function to runtime cleanup to stop the event loop
 void __runtime_timer_cleanup() {
-    extern gots::MainThreadTimerManager* g_main_timer_manager;
-    if (g_main_timer_manager) {
-        g_main_timer_manager->shutdown();
+    std::cout << "DEBUG: Timer cleanup called (new timer system)" << std::endl;
+    
+    // Signal timer manager to exit if it exists for this thread
+    if (gots::g_thread_timer_manager) {
+        gots::g_thread_timer_manager->signal_exit();
     }
 }
 
 int64_t __runtime_timer_set_interval(void* callback, int64_t delay) {
-    std::cout << "DEBUG: __runtime_timer_set_interval called!" << std::endl;
+    std::cout << "DEBUG: __runtime_timer_set_interval called (new timer system)!" << std::endl;
     
-    extern gots::MainThreadTimerManager* g_main_timer_manager;
-    if (!g_main_timer_manager) {
-        std::cout << "DEBUG: Timer manager is null!" << std::endl;
-        return -1;
-    }
+    // Use new timer system for interval timers
+    int64_t timer_id = create_timer_new(delay, callback, true);
     
-    if (g_main_timer_manager->main_execution_active.load()) {
-        std::cout << "DEBUG: Main execution active - storing setInterval request for later processing" << std::endl;
-        
-        int64_t callback_value = reinterpret_cast<int64_t>(callback);
-        
-        {
-            std::lock_guard<std::mutex> lock(deferred_mutex);
-            // Use negative delay to indicate this is an interval timer
-            deferred_timer_requests.push_back({-delay, callback_value});
-        }
-        
-        std::cout << "DEBUG: Interval timer request stored for later processing (delay=" << delay << ", callback_id=" << callback_value << ")" << std::endl;
-        return 2; // Return success - timer will be processed later
-    }
-    
-    // If we reach here, main execution is complete and it's safe to schedule timers
-    std::cout << "DEBUG: Main execution complete - processing setInterval normally" << std::endl;
-    
-    // Get callback function ID and look up function name
-    int64_t callback_value = reinterpret_cast<int64_t>(callback);
-    std::cout << "DEBUG: Callback value=" << callback_value << std::endl;
-    
-    // Look up function name from function ID
-    const char* function_name = __lookup_function_name_by_id(callback_value);
-    if (!function_name) {
-        std::cout << "DEBUG: Function name lookup failed for ID=" << callback_value << std::endl;
-        return -1;
-    }
-    
-    std::string func_name_str(function_name);
-    std::cout << "DEBUG: Using function name=" << func_name_str << std::endl;
-    
-    // Schedule interval timer with the timer manager using function name
-    int64_t result = g_main_timer_manager->add_timer(delay, func_name_str, true);
-    std::cout << "DEBUG: add_timer returned=" << result << std::endl;
-    return result;
+    std::cout << "DEBUG: Interval timer " << timer_id << " created with " << delay << "ms delay using new system" << std::endl;
+    return timer_id;
 }
 
 int64_t __runtime_timer_set_immediate(void* callback) {
@@ -1211,112 +1163,16 @@ int64_t __runtime_timer_set_immediate(void* callback) {
 
 // Function to process all deferred timer requests after main execution completes
 void __runtime_process_deferred_timers() {
-    extern gots::MainThreadTimerManager* g_main_timer_manager;
-    
-    std::vector<std::pair<int64_t, int64_t>> timers_to_process;
-    
-    {
-        std::lock_guard<std::mutex> lock(deferred_mutex);
-        timers_to_process = deferred_timer_requests;
-        deferred_timer_requests.clear();
-    }
-    
-    std::cout << "DEBUG: Processing " << timers_to_process.size() << " deferred timer requests" << std::endl;
-    
-    for (const auto& timer_req : timers_to_process) {
-        int64_t delay = timer_req.first;
-        int64_t callback_id = timer_req.second;
-        
-        // Check if this is an interval timer (negative delay)
-        bool is_interval = (delay < 0);
-        if (is_interval) {
-            delay = -delay; // Convert back to positive
-        }
-        
-        std::cout << "DEBUG: Processing deferred timer: delay=" << delay << " callback_id=" << callback_id << " is_interval=" << is_interval << std::endl;
-        
-        // Check if this is a function pointer or function ID
-        bool is_function_pointer = (callback_id > 0x400000 && callback_id < 0x800000000000LL);
-        
-        std::string func_name_str;
-        
-        if (is_function_pointer) {
-            std::cout << "DEBUG: Processing function pointer: " << std::hex << callback_id << std::dec << std::endl;
-            
-            // Try to look up the function name using the function pointer
-            const char* function_name = __lookup_function_name_by_id(callback_id);
-            if (function_name) {
-                func_name_str = std::string(function_name);
-                std::cout << "DEBUG: Found function name " << func_name_str << " for function pointer" << std::endl;
-            } else {
-                // Generate a name for the anonymous function pointer
-                func_name_str = "anonymous_func_ptr_" + std::to_string(callback_id);
-                std::cout << "DEBUG: Using generated name " << func_name_str << " for function pointer" << std::endl;
-                
-                // Register the function pointer with the generated name
-                extern void __register_function(const char* name, void* func_ptr);
-                __register_function(func_name_str.c_str(), reinterpret_cast<void*>(callback_id));
-            }
-        } else {
-            // Try normal function ID lookup
-            const char* function_name = __lookup_function_name_by_id(callback_id);
-            
-            if (!function_name) {
-                std::cout << "DEBUG: Function name lookup failed for deferred timer callback_id=" << callback_id << std::endl;
-                
-                // Check if this is a valid function pointer (should be much larger than 1000)
-                if (callback_id < 0x100000) {
-                    std::cout << "ERROR: Invalid callback ID " << callback_id << " - appears to be a literal value, not a function pointer" << std::endl;
-                    std::cout << "ERROR: Anonymous functions in setTimeout are not yet properly supported" << std::endl;
-                    continue;  // Skip this timer
-                }
-                
-                // For direct function pointers, generate a unique name
-                func_name_str = "anonymous_timer_" + std::to_string(callback_id);
-                
-                // The callback_id is actually the function pointer
-                void* actual_func_ptr = reinterpret_cast<void*>(callback_id);
-                
-                std::cout << "DEBUG: Registering anonymous function pointer " << actual_func_ptr << " as " << func_name_str << std::endl;
-                extern void __register_function(const char* name, void* func_ptr);
-                __register_function(func_name_str.c_str(), actual_func_ptr);
-                
-                std::cout << "DEBUG: Registered anonymous function as " << func_name_str << std::endl;
-            } else {
-                func_name_str = std::string(function_name);
-            }
-        }
-        
-        std::cout << "DEBUG: Scheduling deferred timer with function=" << func_name_str << std::endl;
-        
-        // Now schedule the timer for real
-        if (g_main_timer_manager) {
-            int64_t timer_id = g_main_timer_manager->add_timer(delay, func_name_str, is_interval);
-            std::cout << "DEBUG: Deferred timer scheduled with ID=" << timer_id << std::endl;
-        }
-    }
-    
-    std::cout << "DEBUG: All deferred timers processed" << std::endl;
+    std::cout << "DEBUG: __runtime_process_deferred_timers called (simplified - no longer needed)" << std::endl;
+    // No deferred processing needed with simplified goroutine-based timers
 }
-
 bool __runtime_timer_clear_timeout(int64_t id) {
-    extern gots::MainThreadTimerManager* g_main_timer_manager;
+    std::cout << "DEBUG: clearTimeout called for id=" << id << " (new timer system)" << std::endl;
     
-    if (!g_main_timer_manager) {
-        return false;
-    }
-    
-    // If main execution is still active, we might need to clear a deferred timer
-    if (g_main_timer_manager->main_execution_active.load()) {
-        std::cout << "DEBUG: clearTimeout called during main execution for id=" << id << std::endl;
-        
-        // For deferred timers, we could implement a deferred cancellation list
-        // For now, just return false since the timer isn't scheduled yet
-        std::cout << "DEBUG: Cannot clear deferred timer - not implemented" << std::endl;
-        return false;
-    }
-    
-    return g_main_timer_manager->cancel_timer(id);
+    // Use the new timer cancellation system
+    bool result = cancel_timer_new(id);
+    std::cout << "DEBUG: Timer " << id << (result ? " cancelled successfully" : " cancellation failed") << " using new system" << std::endl;
+    return result;
 }
 
 bool __runtime_timer_clear_interval(int64_t id) {
@@ -2030,6 +1886,27 @@ void __runtime_register_global() {
     
     // Test function
     __register_function("__runtime_test_simple", reinterpret_cast<void*>(__runtime_test_simple));
+    
+    // Goroutine functions - CRITICAL: These were missing!
+    extern void* __goroutine_spawn(const char* function_name);
+    extern void* __goroutine_spawn_with_arg1(const char* function_name, int64_t arg1);
+    extern void* __goroutine_spawn_with_arg2(const char* function_name, int64_t arg1, int64_t arg2);
+    extern void* __goroutine_spawn_with_scope(const char* function_name, void* captured_scope);
+    extern void* __goroutine_spawn_func_ptr(void* func_ptr, void* arg);
+    extern void* __goroutine_spawn_func_id(int64_t func_id, void* arg);
+    
+    // Function lookup
+    extern void* __lookup_function(const char* name);
+    
+    __register_function("__goroutine_spawn", reinterpret_cast<void*>(__goroutine_spawn));
+    __register_function("__goroutine_spawn_with_arg1", reinterpret_cast<void*>(__goroutine_spawn_with_arg1));
+    __register_function("__goroutine_spawn_with_arg2", reinterpret_cast<void*>(__goroutine_spawn_with_arg2));
+    __register_function("__goroutine_spawn_with_scope", reinterpret_cast<void*>(__goroutine_spawn_with_scope));
+    __register_function("__goroutine_spawn_func_ptr", reinterpret_cast<void*>(__goroutine_spawn_func_ptr));
+    __register_function("__goroutine_spawn_func_id", reinterpret_cast<void*>(__goroutine_spawn_func_id));
+    
+    // Register function lookup
+    __register_function("__lookup_function", reinterpret_cast<void*>(__lookup_function));
     
     std::cout << "DEBUG: All runtime syscalls registered!" << std::endl;
 }

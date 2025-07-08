@@ -194,6 +194,7 @@ public:
     virtual void emit_goroutine_spawn(const std::string& function_name) = 0;
     virtual void emit_goroutine_spawn_with_args(const std::string& function_name, int arg_count) = 0;
     virtual void emit_goroutine_spawn_with_func_ptr() = 0;
+    virtual void emit_goroutine_spawn_with_func_id() = 0;
     virtual void emit_promise_resolve(int value_reg) = 0;
     virtual void emit_promise_await(int promise_reg) = 0;
     virtual std::vector<uint8_t> get_code() const = 0;
@@ -254,11 +255,13 @@ public:
     void emit_goroutine_spawn(const std::string& function_name) override;
     void emit_goroutine_spawn_with_args(const std::string& function_name, int arg_count) override;
     void emit_goroutine_spawn_with_func_ptr() override;
+    void emit_goroutine_spawn_with_func_id() override;
     void emit_promise_resolve(int value_reg) override;
     void emit_promise_await(int promise_reg) override;
     std::vector<uint8_t> get_code() const override { return code; }
     void clear() override { code.clear(); label_offsets.clear(); unresolved_jumps.clear(); }
     const std::unordered_map<std::string, int64_t>& get_label_offsets() const override { return label_offsets; }
+    void resolve_runtime_function_calls();  // Resolve unresolved runtime function calls
     void set_function_stack_size(int64_t size) { function_stack_size = size; }
     int64_t get_function_stack_size() const { return function_stack_size; }
     void emit_mov_reg_mem_rsp(int reg, int64_t offset);  // RSP-relative version
@@ -316,6 +319,7 @@ public:
     void emit_goroutine_spawn(const std::string& function_name) override;
     void emit_goroutine_spawn_with_args(const std::string& function_name, int arg_count) override;
     void emit_goroutine_spawn_with_func_ptr() override;
+    void emit_goroutine_spawn_with_func_id() override;
     void emit_promise_resolve(int value_reg) override;
     void emit_promise_await(int promise_reg) override;
     std::vector<uint8_t> get_code() const override { return code; }
@@ -413,10 +417,12 @@ struct FunctionExpression : ExpressionNode {
     std::vector<Variable> parameters;
     DataType return_type = DataType::UNKNOWN;
     std::vector<std::unique_ptr<ASTNode>> body;
+    bool is_goroutine = false;
     
     FunctionExpression() : name("") {}
     FunctionExpression(const std::string& n) : name(n) {}
     void generate_code(CodeGenerator& gen, TypeInference& types) override;
+    void compile_function_body(CodeGenerator& gen, TypeInference& types, const std::string& func_name);
 };
 
 struct MethodCall : ExpressionNode {
@@ -850,5 +856,8 @@ public:
 
 // Global function for setting compiler context during AST generation
 void set_current_compiler(GoTSCompiler* compiler);
+
+// Function to compile all deferred function expressions
+void compile_deferred_function_expressions(CodeGenerator& gen, TypeInference& types);
 
 }

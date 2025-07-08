@@ -1,10 +1,12 @@
 #include "compiler.h"
 #include "runtime.h"
 #include "runtime_object.h"
+#include "compilation_context.h"
 #include <iostream>
 #include <unordered_map>
 #include <cstring>
 #include <cstdlib>
+#include <queue>
 
 // Simple global constant storage for imported constants
 static std::unordered_map<std::string, double> global_imported_constants;
@@ -13,6 +15,16 @@ namespace gots {
 
 // Forward declarations for function ID registry
 void __register_function_id(int64_t function_id, const std::string& function_name);
+void ensure_lookup_function_by_id_registered();
+
+// Forward declaration for runtime function lookup
+extern "C" void* __lookup_function(const char* name);
+
+// Helper function to get the global deferred functions list
+static std::vector<std::pair<std::string, FunctionExpression*>>& get_deferred_functions() {
+    static std::vector<std::pair<std::string, FunctionExpression*>> deferred_functions;
+    return deferred_functions;
+}
 
 // Static member definition
 GoTSCompiler* ConstructorDecl::current_compiler_context = nullptr;
@@ -596,7 +608,76 @@ void FunctionCall::generate_code(CodeGenerator& gen, TypeInference& types) {
         }
         result_type = DataType::PROMISE;
     } else {
+        // Check for global timer functions and map them to runtime equivalents
+        if (name == "setTimeout") {
+            // Map setTimeout to runtime.timer.setTimeout
+            for (size_t i = 0; i < arguments.size() && i < 6; i++) {
+                arguments[i]->generate_code(gen, types);
+                switch (i) {
+                    case 0: gen.emit_mov_reg_reg(7, 0); break;  // RDI = RAX
+                    case 1: gen.emit_mov_reg_reg(6, 0); break;  // RSI = RAX
+                    case 2: gen.emit_mov_reg_reg(2, 0); break;  // RDX = RAX
+                    case 3: gen.emit_mov_reg_reg(1, 0); break;  // RCX = RAX
+                    case 4: gen.emit_mov_reg_reg(8, 0); break;  // R8 = RAX
+                    case 5: gen.emit_mov_reg_reg(9, 0); break;  // R9 = RAX
+                }
+            }
+            gen.emit_call("__runtime_timer_set_timeout");
+            result_type = DataType::INT64; // Timer ID
+            return; // Skip normal function call handling
+        } else if (name == "setInterval") {
+            for (size_t i = 0; i < arguments.size() && i < 6; i++) {
+                arguments[i]->generate_code(gen, types);
+                switch (i) {
+                    case 0: gen.emit_mov_reg_reg(7, 0); break;  // RDI = RAX
+                    case 1: gen.emit_mov_reg_reg(6, 0); break;  // RSI = RAX
+                    case 2: gen.emit_mov_reg_reg(2, 0); break;  // RDX = RAX
+                    case 3: gen.emit_mov_reg_reg(1, 0); break;  // RCX = RAX
+                    case 4: gen.emit_mov_reg_reg(8, 0); break;  // R8 = RAX
+                    case 5: gen.emit_mov_reg_reg(9, 0); break;  // R9 = RAX
+                }
+            }
+            gen.emit_call("__runtime_timer_set_interval");
+            result_type = DataType::INT64; // Timer ID
+            return;
+        } else if (name == "clearTimeout") {
+            for (size_t i = 0; i < arguments.size() && i < 6; i++) {
+                arguments[i]->generate_code(gen, types);
+                switch (i) {
+                    case 0: gen.emit_mov_reg_reg(7, 0); break;  // RDI = RAX
+                    case 1: gen.emit_mov_reg_reg(6, 0); break;  // RSI = RAX
+                    case 2: gen.emit_mov_reg_reg(2, 0); break;  // RDX = RAX
+                    case 3: gen.emit_mov_reg_reg(1, 0); break;  // RCX = RAX
+                    case 4: gen.emit_mov_reg_reg(8, 0); break;  // R8 = RAX
+                    case 5: gen.emit_mov_reg_reg(9, 0); break;  // R9 = RAX
+                }
+            }
+            gen.emit_call("__runtime_timer_clear_timeout");
+            result_type = DataType::BOOLEAN; // Success/failure
+            return;
+        } else if (name == "clearInterval") {
+            for (size_t i = 0; i < arguments.size() && i < 6; i++) {
+                arguments[i]->generate_code(gen, types);
+                switch (i) {
+                    case 0: gen.emit_mov_reg_reg(7, 0); break;  // RDI = RAX
+                    case 1: gen.emit_mov_reg_reg(6, 0); break;  // RSI = RAX
+                    case 2: gen.emit_mov_reg_reg(2, 0); break;  // RDX = RAX
+                    case 3: gen.emit_mov_reg_reg(1, 0); break;  // RCX = RAX
+                    case 4: gen.emit_mov_reg_reg(8, 0); break;  // R8 = RAX
+                    case 5: gen.emit_mov_reg_reg(9, 0); break;  // R9 = RAX
+                }
+            }
+            gen.emit_call("__runtime_timer_clear_interval");
+            result_type = DataType::BOOLEAN; // Success/failure
+            return;
+        }
+        
         // Regular function call - use x86-64 calling convention
+        
+        // Check if this is a variable containing a function ID that needs to be resolved
+        DataType var_type = types.get_variable_type(name);
+        bool is_function_variable = (var_type == DataType::FUNCTION);
+        
         // Generate code for arguments and place them in appropriate registers
         for (size_t i = 0; i < arguments.size() && i < 6; i++) {
             arguments[i]->generate_code(gen, types);
@@ -620,7 +701,32 @@ void FunctionCall::generate_code(CodeGenerator& gen, TypeInference& types) {
             gen.emit_mov_mem_reg(0, 0);  // mov [rsp], rax
         }
         
-        gen.emit_call(name);
+        if (is_function_variable) {
+            // This is a variable containing a function ID - resolve it to function address
+            std::cout << "DEBUG: Calling function variable: " << name << std::endl;
+            
+            // Ensure our lookup function is registered
+            ensure_lookup_function_by_id_registered();
+            
+            // Load the function ID from the variable
+            int64_t var_offset = types.get_variable_offset(name);
+            if (var_offset == 0) var_offset = -8; // Default offset
+            gen.emit_mov_reg_mem(0, var_offset);  // RAX = function_id
+            
+            // Call runtime function to resolve function ID to address
+            gen.emit_mov_reg_reg(7, 0);  // RDI = function_id (first arg)
+            gen.emit_call("__lookup_function_by_id");
+            
+            // RAX now contains the function address, call it
+            if (auto x86_gen = dynamic_cast<X86CodeGen*>(&gen)) {
+                x86_gen->emit_call_reg(0);  // call rax
+            } else {
+                gen.emit_call(name);  // fallback
+            }
+        } else {
+            // Direct function call by name
+            gen.emit_call(name);
+        }
         
         // Look up function return type from compiler registry
         if (g_current_compiler) {
@@ -929,27 +1035,221 @@ void MethodCall::generate_code(CodeGenerator& gen, TypeInference& types) {
 }
 
 void FunctionExpression::generate_code(CodeGenerator& gen, TypeInference& types) {
-    // Simplified approach: just return a function ID without generating inline function code
-    // The function will be generated separately and registered for later execution
-    
+    // Generate unique function name
     static int func_expr_counter = 0;
     int current_func_id = func_expr_counter++;
     std::string func_name = name.empty() ? 
         ("__func_expr_" + std::to_string(current_func_id)) : name;
     
-    // Generate a simple function ID for this expression
-    static int64_t function_id_counter = 1000;
-    int64_t function_id = function_id_counter++;
+    std::cout << "DEBUG: Compiling function expression: " << func_name << std::endl;
     
-    std::cout << "DEBUG: Function expression " << func_name << " assigned ID: " << function_id << std::endl;
+    // DEBUG: Check AST body integrity
+    std::cout << "DEBUG: Function has " << body.size() << " statements" << std::endl;
+    for (size_t i = 0; i < body.size(); i++) {
+        if (body[i]) {
+            std::cout << "DEBUG: Statement " << i << " is valid" << std::endl;
+        } else {
+            std::cout << "DEBUG: ERROR - Statement " << i << " is null!" << std::endl;
+        }
+    }
     
-    // Register the function ID with its name for runtime lookup
-    __register_function_id(function_id, func_name);
+    // IMMEDIATE COMPILATION: Compile the function immediately instead of deferring
+    // This avoids all memory management issues with deferred compilation
+    std::cout << "DEBUG: Using immediate compilation to avoid memory issues" << std::endl;
     
-    // For now, just return the function ID - actual function execution will be handled later
-    gen.emit_mov_reg_imm(0, function_id);
+    try {
+        compile_function_body(gen, types, func_name);
+        std::cout << "DEBUG: Immediate compilation succeeded for " << func_name << std::endl;
+    } catch (const std::exception& e) {
+        std::cerr << "ERROR: Immediate compilation failed for " << func_name << ": " << e.what() << std::endl;
+        throw;
+    }
     
-    result_type = DataType::FUNCTION;
+    if (is_goroutine) {
+        // Just emit the goroutine spawn call - function is already compiled
+        std::cout << "DEBUG: FunctionExpression is_goroutine=true, calling emit_goroutine_spawn" << std::endl;
+        gen.emit_goroutine_spawn(func_name);
+        result_type = DataType::PROMISE;
+    } else {
+        // Return function ID for callback registration
+        int64_t func_id = std::hash<std::string>{}(func_name);
+        
+        // Register function ID with name for runtime callback lookup
+        __register_function_id(func_id, func_name);
+        std::cout << "DEBUG: Registered function ID " << func_id << " for function " << func_name << std::endl;
+        
+        gen.emit_mov_reg_imm(0, func_id); // RAX = function ID
+        result_type = DataType::FUNCTION;
+    }
+}
+
+// Static method to compile all deferred function expressions
+void compile_deferred_function_expressions(CodeGenerator& gen, TypeInference& types) {
+    // Use the new compilation framework
+    std::cout << "DEBUG: Using new compilation framework instead of legacy deferred system" << std::endl;
+    g_compilation_context.compile_all_functions(gen, types);
+    
+    // Clear the context for next compilation
+    g_compilation_context.clear();
+    
+    // Keep legacy system for backward compatibility (but it should be empty)
+    auto& deferred_functions = get_deferred_functions();
+    
+    std::cout << "DEBUG: Starting universal deferred function compilation system" << std::endl;
+    
+    // QUEUE-BASED PROCESSING: Use a queue to handle infinite nesting levels
+    // This approach is completely immune to additions during processing
+    std::queue<std::pair<std::string, FunctionExpression*>> compilation_queue;
+    
+    // Initialize queue with current functions
+    for (const auto& pair : deferred_functions) {
+        compilation_queue.push(pair);
+    }
+    deferred_functions.clear();
+    
+    int total_compiled = 0;
+    int nesting_level = 0;
+    
+    while (!compilation_queue.empty()) {
+        int current_level_count = compilation_queue.size();
+        std::cout << "DEBUG: Processing nesting level " << nesting_level << " with " << current_level_count << " functions" << std::endl;
+        
+        // Process all functions at current nesting level
+        for (int i = 0; i < current_level_count; i++) {
+            auto pair = compilation_queue.front();
+            compilation_queue.pop();
+            
+            const std::string& func_name = pair.first;
+            FunctionExpression* func_expr = pair.second;
+            
+            // Safety checks
+            if (func_name.empty() || func_name.size() > 1000) {
+                std::cerr << "ERROR: Invalid function name in deferred compilation, skipping" << std::endl;
+                continue;
+            }
+            
+            if (func_expr == nullptr) {
+                std::cerr << "ERROR: Null function expression pointer, skipping" << std::endl;
+                continue;
+            }
+            
+            std::cout << "DEBUG: Compiling function " << func_name << " at nesting level " << nesting_level << std::endl;
+            
+            try {
+                func_expr->compile_function_body(gen, types, func_name);
+                total_compiled++;
+                std::cout << "DEBUG: Successfully compiled " << func_name << std::endl;
+            } catch (const std::exception& e) {
+                std::cerr << "ERROR: Failed to compile " << func_name << ": " << e.what() << std::endl;
+            } catch (...) {
+                std::cerr << "ERROR: Failed to compile " << func_name << ": unknown exception" << std::endl;
+            }
+        }
+        
+        // Add any new functions that were discovered during this level
+        for (const auto& pair : deferred_functions) {
+            compilation_queue.push(pair);
+        }
+        deferred_functions.clear();
+        
+        nesting_level++;
+        
+        // Safety check to prevent infinite loops
+        if (nesting_level > 100) {
+            std::cerr << "ERROR: Maximum nesting depth exceeded (100 levels)" << std::endl;
+            break;
+        }
+    }
+    
+    std::cout << "DEBUG: Universal deferred compilation completed. Total functions compiled: " << total_compiled << " across " << nesting_level << " nesting levels" << std::endl;
+}
+
+void FunctionExpression::compile_function_body(CodeGenerator& gen, TypeInference& types, const std::string& func_name) {
+    // Safety check for corrupted function name
+    if (func_name.empty() || func_name.size() > 1000) {
+        std::cerr << "ERROR: Invalid function name detected, skipping compilation" << std::endl;
+        return;
+    }
+    std::cout << "DEBUG: Compiling function body for: " << func_name << std::endl;
+    
+    // Save current stack offset state
+    TypeInference local_types;
+    local_types.reset_for_function();
+    
+    // Emit function label
+    gen.emit_label(func_name);
+    
+    // Calculate estimated stack size for the function
+    int64_t estimated_stack_size = (parameters.size() * 8) + (body.size() * 16) + 64;
+    if (estimated_stack_size < 80) estimated_stack_size = 80;
+    if (estimated_stack_size % 16 != 0) {
+        estimated_stack_size += 16 - (estimated_stack_size % 16);
+    }
+    
+    // Set stack size for this function
+    if (auto x86_gen = dynamic_cast<X86CodeGen*>(&gen)) {
+        x86_gen->set_function_stack_size(estimated_stack_size);
+    }
+    
+    gen.emit_prologue();
+    
+    // Set up parameter types and save parameters from registers to stack
+    for (size_t i = 0; i < parameters.size() && i < 6; i++) {
+        const auto& param = parameters[i];
+        local_types.set_variable_type(param.name, param.type);
+        
+        int stack_offset = -(int)(i + 1) * 8;
+        local_types.set_variable_offset(param.name, stack_offset);
+        
+        switch (i) {
+            case 0: gen.emit_mov_mem_reg(stack_offset, 7); break;  // save RDI
+            case 1: gen.emit_mov_mem_reg(stack_offset, 6); break;  // save RSI
+            case 2: gen.emit_mov_mem_reg(stack_offset, 2); break;  // save RDX
+            case 3: gen.emit_mov_mem_reg(stack_offset, 1); break;  // save RCX
+            case 4: gen.emit_mov_mem_reg(stack_offset, 8); break;  // save R8
+            case 5: gen.emit_mov_mem_reg(stack_offset, 9); break;  // save R9
+        }
+    }
+    
+    // Generate function body
+    bool has_explicit_return = false;
+    std::cout << "DEBUG: Generating " << body.size() << " statements in function body" << std::endl;
+    for (size_t i = 0; i < body.size(); i++) {
+        const auto& stmt = body[i];
+        std::cout << "DEBUG: Generating statement " << i << " in function body" << std::endl;
+        
+        // Safety check for null pointers
+        if (!stmt) {
+            std::cout << "ERROR: Statement " << i << " is null!" << std::endl;
+            continue;
+        }
+        
+        try {
+            stmt->generate_code(gen, local_types);
+            std::cout << "DEBUG: Statement " << i << " generated successfully" << std::endl;
+        } catch (const std::exception& e) {
+            std::cout << "ERROR: Statement " << i << " threw exception: " << e.what() << std::endl;
+            throw;
+        } catch (...) {
+            std::cout << "ERROR: Statement " << i << " threw unknown exception" << std::endl;
+            throw;
+        }
+        
+        if (dynamic_cast<const ReturnStatement*>(stmt.get())) {
+            has_explicit_return = true;
+        }
+    }
+    
+    // If no explicit return, add implicit return 0
+    if (!has_explicit_return) {
+        gen.emit_mov_reg_imm(0, 0);  // mov rax, 0
+        gen.emit_function_return();
+    }
+    
+    // Safety check before final debug output
+    if (!func_name.empty() && func_name.size() <= 1000) {
+        std::cout << "DEBUG: Function body compilation completed for: " << func_name << std::endl;
+    }
 }
 
 // Shared registry for function ID to name mapping - used by both registration and lookup
@@ -968,10 +1268,34 @@ extern "C" const char* __lookup_function_name_by_id(int64_t function_id) {
     return nullptr;
 }
 
+// Global function to look up function address by ID for JIT calls
+extern "C" void* __lookup_function_by_id(int64_t function_id) {
+    auto& registry = get_function_id_registry();
+    auto it = registry.find(function_id);
+    if (it != registry.end()) {
+        const std::string& func_name = it->second;
+        std::cout << "DEBUG: Looking up function address for ID " << function_id << " (name: " << func_name << ")" << std::endl;
+        
+        // Look up the function address in the runtime registry
+        return __lookup_function(func_name.c_str());
+    }
+    std::cout << "ERROR: Function ID " << function_id << " not found in registry!" << std::endl;
+    return nullptr;
+}
+
 // Function to register a function ID with its name (called from generate_code)
 void __register_function_id(int64_t function_id, const std::string& function_name) {
     auto& registry = get_function_id_registry();
     registry[function_id] = function_name;
+}
+
+// Register our function in the runtime on first use
+static bool __lookup_function_by_id_registered = false;
+void ensure_lookup_function_by_id_registered() {
+    if (!__lookup_function_by_id_registered) {
+        __register_function("__lookup_function_by_id", reinterpret_cast<void*>(__lookup_function_by_id));
+        __lookup_function_by_id_registered = true;
+    }
 }
 
 void ExpressionMethodCall::generate_code(CodeGenerator& gen, TypeInference& types) {
@@ -1015,11 +1339,19 @@ void ExpressionMethodCall::generate_code(CodeGenerator& gen, TypeInference& type
             
             // Generate argument code using proper x86-64 calling convention
             for (size_t i = 0; i < arguments.size() && i < 6; i++) {
+                std::cout << "DEBUG: Generating code for timer argument " << i << std::endl;
                 arguments[i]->generate_code(gen, types);
+                std::cout << "DEBUG: Timer argument " << i << " generated, value in RAX" << std::endl;
                 // Move argument to appropriate register (x86-64 calling convention)
                 switch (i) {
-                    case 0: gen.emit_mov_reg_reg(7, 0); break;  // RDI = RAX (1st arg)
-                    case 1: gen.emit_mov_reg_reg(6, 0); break;  // RSI = RAX (2nd arg)  
+                    case 0: 
+                        std::cout << "DEBUG: Moving argument 0 (callback) from RAX to RDI" << std::endl;
+                        gen.emit_mov_reg_reg(7, 0); // RDI = RAX (1st arg)
+                        break;
+                    case 1: 
+                        std::cout << "DEBUG: Moving argument 1 (delay) from RAX to RSI" << std::endl;
+                        gen.emit_mov_reg_reg(6, 0); // RSI = RAX (2nd arg)
+                        break;  
                     case 2: gen.emit_mov_reg_reg(2, 0); break;  // RDX = RAX (3rd arg)
                     case 3: gen.emit_mov_reg_reg(1, 0); break;  // RCX = RAX (4th arg)
                     case 4: gen.emit_mov_reg_reg(8, 0); break;  // R8 = RAX (5th arg)
@@ -1412,8 +1744,9 @@ void Assignment::generate_code(CodeGenerator& gen, TypeInference& types) {
         } else {
             // Untyped variable - infer type from value for arrays and other structured types
             // For simple values, keep as UNKNOWN for JavaScript compatibility
-            if (value->result_type == DataType::TENSOR || value->result_type == DataType::STRING || value->result_type == DataType::REGEX) {
-                // Arrays, strings, and regex should preserve their type for proper method dispatch
+            if (value->result_type == DataType::TENSOR || value->result_type == DataType::STRING || 
+                value->result_type == DataType::REGEX || value->result_type == DataType::FUNCTION) {
+                // Arrays, strings, regex, and functions should preserve their type for proper method dispatch
                 variable_type = value->result_type;
             } else {
                 // Other types keep as UNKNOWN/ANY for JavaScript compatibility

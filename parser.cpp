@@ -194,18 +194,22 @@ std::unique_ptr<ExpressionNode> Parser::parse_unary() {
     }
     
     if (match(TokenType::GO)) {
-        // Parse go functionCall() - the function call should be the next expression
+        // Parse go functionCall() or go function(){}
         auto expr = parse_call();
         
-        // The expression should be a function call - mark it as a goroutine
+        // The expression should be a function call or function expression - mark it as a goroutine
         if (auto func_call = dynamic_cast<FunctionCall*>(expr.get())) {
             func_call->is_goroutine = true;
             return expr;
         } else if (auto method_call = dynamic_cast<MethodCall*>(expr.get())) {
             method_call->is_goroutine = true;
             return expr;
+        } else if (auto func_expr = dynamic_cast<FunctionExpression*>(expr.get())) {
+            func_expr->is_goroutine = true;
+            std::cout << "DEBUG: Parser set is_goroutine=true on FunctionExpression" << std::endl;
+            return expr;
         } else {
-            throw std::runtime_error("'go' can only be used with function calls");
+            throw std::runtime_error("'go' can only be used with function calls or function expressions");
         }
     }
     

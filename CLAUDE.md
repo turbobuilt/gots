@@ -153,3 +153,13 @@ To test npm packages, copy the gots binary to ./tests, cd into tests and run fro
 When asked to implement ECMAscript things, you can reference ./ecmascript_reference.txt. It is a 10,000 line file, so searching is wise.
 
 NodeJS compatibility. We are not going to implement any modules. Instead we will create a global called runtime. Then runtime will be an object with every possible call you will need to implement every node module. This object will then be used to create node modules in gots.
+
+Architecture Idea:
+
+To handle multiple goroutines and timers, due to lexical scope, we have to keep the lexical scope of the parent goroutines alive until all children finish.
+
+We have the following "program manager" loop that runs on program startup. First, a goroutine is created that will run the main javascript program. Once that goroutine fires off, it goes through the loop.
+
+for timers and goroutines use the folloiwng architecture
+each goroutine runs, settimeout puts timers, sorted in a sort of queue like structure (But sort by time)
+eveerything happens till go routine idle. runs any timers in past, then sleeps until next timer(but ability to have others cancel)

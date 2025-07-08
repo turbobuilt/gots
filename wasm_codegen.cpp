@@ -340,6 +340,10 @@ void WasmCodeGen::emit_goroutine_spawn_with_func_ptr() {
     emit_call("__goroutine_spawn_func_ptr");
 }
 
+void WasmCodeGen::emit_goroutine_spawn_with_func_id() {
+    emit_call("__goroutine_spawn_func_id");
+}
+
 void WasmCodeGen::emit_promise_resolve(int value_reg) {
     emit_opcode(WASM_LOCAL_GET);
     emit_leb128(value_reg);

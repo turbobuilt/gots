@@ -18,12 +18,17 @@ void X86CodeGen::emit_prologue() {
     code.push_back(0x55);  // push rbp
     emit_mov_reg_reg(RBP, RSP);  // mov rbp, rsp
     
-    // Save callee-saved registers for thread safety
+    // Save callee-saved registers
     code.push_back(0x53);  // push rbx
     code.push_back(0x41); code.push_back(0x54);  // push r12
     code.push_back(0x41); code.push_back(0x55);  // push r13
     code.push_back(0x41); code.push_back(0x56);  // push r14
     code.push_back(0x41); code.push_back(0x57);  // push r15
+    
+    // After pushing 6 registers (48 bytes), we need to ensure stack is 16-byte aligned
+    // Stack was 16-byte aligned before call (8 bytes return addr + 8 bytes rbp + 40 bytes regs = 56 bytes)
+    // We need to add 8 more bytes to make it 64 (divisible by 16)
+    code.push_back(0x48); code.push_back(0x83); code.push_back(0xEC); code.push_back(0x08);  // sub rsp, 8
     
     // Use dynamic stack size if set, otherwise default to 256 bytes for safety
     int64_t stack_size = function_stack_size > 0 ? function_stack_size : 256;
@@ -36,13 +41,17 @@ void X86CodeGen::emit_prologue() {
 }
 
 void X86CodeGen::emit_epilogue() {
-    // Use dynamic stack size if set, otherwise default to 256 bytes for safety
+    // Calculate how much stack space we allocated
     int64_t stack_size = function_stack_size > 0 ? function_stack_size : 256;
-    // Ensure 16-byte alignment
     if (stack_size % 16 != 0) {
         stack_size += 16 - (stack_size % 16);
     }
-    emit_add_reg_imm(RSP, stack_size);  // restore stack
+    
+    // Restore stack by adding back the allocated space
+    emit_add_reg_imm(RSP, stack_size);
+    
+    // Remove alignment padding
+    code.push_back(0x48); code.push_back(0x83); code.push_back(0xC4); code.push_back(0x08);  // add rsp, 8
     
     // Restore callee-saved registers in reverse order
     code.push_back(0x41); code.push_back(0x5F);  // pop r15
@@ -50,7 +59,7 @@ void X86CodeGen::emit_epilogue() {
     code.push_back(0x41); code.push_back(0x5D);  // pop r13
     code.push_back(0x41); code.push_back(0x5C);  // pop r12
     code.push_back(0x5B);       // pop rbx
-    code.push_back(0x5D);       // pop rbp
+    code.push_back(0x5D);       // pop rbp - restore original rbp
     emit_ret();
 }
 
@@ -279,6 +288,7 @@ void X86CodeGen::emit_call(const std::string& label) {
             func_addr = (void*)__match_result_get_groups;
         } else if (label == "__goroutine_spawn") {
             func_addr = (void*)__goroutine_spawn;
+            std::cout << "DEBUG: Hardcoded __goroutine_spawn address: " << func_addr << std::endl;
         } else if (label == "__promise_await") {
             func_addr = (void*)__promise_await;
         } else if (label == "__goroutine_spawn_with_arg1") {
@@ -287,8 +297,12 @@ void X86CodeGen::emit_call(const std::string& label) {
             func_addr = (void*)__goroutine_spawn_with_arg2;
         } else if (label == "__goroutine_spawn_with_scope") {
             func_addr = (void*)__goroutine_spawn_with_scope;
+        } else if (label == "__set_goroutine_context") {
+            func_addr = (void*)__set_goroutine_context;
         } else if (label == "__goroutine_spawn_func_ptr") {
             func_addr = (void*)__goroutine_spawn_func_ptr;
+        } else if (label == "__goroutine_spawn_func_id") {
+            func_addr = (void*)__goroutine_spawn_func_id;
         } else if (label == "__promise_resolve") {
             func_addr = (void*)__promise_resolve;
         // Typed array creation functions
@@ -418,6 +432,7 @@ void X86CodeGen::emit_call(const std::string& label) {
         }
         
         if (func_addr) {
+            std::cout << "DEBUG: About to generate call to " << label << " at address " << func_addr << std::endl;
             // mov rax, immediate64
             code.push_back(0x48);
             code.push_back(0xB8);
@@ -428,6 +443,7 @@ void X86CodeGen::emit_call(const std::string& label) {
             // call rax
             code.push_back(0xFF);
             code.push_back(0xD0);
+            std::cout << "DEBUG: Generated call instruction for " << label << std::endl;
             return;
         }
         
@@ -436,6 +452,7 @@ void X86CodeGen::emit_call(const std::string& label) {
         auto it = gots_function_registry.find(label);
         if (it != gots_function_registry.end()) {
             func_addr = it->second;
+            std::cout << "DEBUG: emit_call found " << label << " in registry at address " << func_addr << std::endl;
             
             // mov rax, immediate64
             code.push_back(0x48);
@@ -475,13 +492,16 @@ void X86CodeGen::emit_ret() {
 }
 
 void X86CodeGen::emit_function_return() {
-    // Use dynamic stack size if set, otherwise default to 56 bytes
-    int64_t stack_size = function_stack_size > 0 ? function_stack_size : 56;
+    // Use dynamic stack size if set, otherwise default to 256 bytes (same as prologue)
+    int64_t stack_size = function_stack_size > 0 ? function_stack_size : 256;
     // Ensure 16-byte alignment
     if (stack_size % 16 != 0) {
         stack_size += 16 - (stack_size % 16);
     }
-    emit_add_reg_imm(RSP, stack_size);   // restore stack
+    emit_add_reg_imm(RSP, stack_size);   // restore function stack space
+    
+    // Remove stack alignment padding (must match prologue)
+    code.push_back(0x48); code.push_back(0x83); code.push_back(0xC4); code.push_back(0x08);  // add rsp, 8
     
     // Restore callee-saved registers in reverse order
     code.push_back(0x41); code.push_back(0x5F);  // pop r15
@@ -621,6 +641,7 @@ void X86CodeGen::emit_and_reg_imm(int reg, int64_t value) {
 }
 
 void X86CodeGen::emit_label(const std::string& label) {
+    std::cout << "DEBUG: emit_label(" << label << ") at offset " << code.size() << std::endl;
     label_offsets[label] = code.size();
     
     for (auto& jump : unresolved_jumps) {
@@ -641,7 +662,70 @@ void X86CodeGen::emit_label(const std::string& label) {
         unresolved_jumps.end());
 }
 
+void X86CodeGen::resolve_runtime_function_calls() {
+    // Resolve any unresolved runtime function calls now that the registry is populated
+    extern std::unordered_map<std::string, void*> gots_function_registry;
+    
+    std::cout << "DEBUG: Resolving " << unresolved_jumps.size() << " unresolved function calls" << std::endl;
+    
+    auto it = unresolved_jumps.begin();
+    while (it != unresolved_jumps.end()) {
+        const std::string& label = it->first;
+        int64_t call_offset = it->second;
+        
+        // Check if this is a runtime function that's now registered
+        if (label.substr(0, 2) == "__") {
+            auto registry_it = gots_function_registry.find(label);
+            if (registry_it != gots_function_registry.end()) {
+                void* func_addr = registry_it->second;
+                std::cout << "DEBUG: Resolving runtime function " << label << " to address " << func_addr << std::endl;
+                
+                // Patch the call instruction to use an absolute call via register
+                // We need to replace the relative call (E8 XX XX XX XX) with:
+                // mov rax, immediate64 (48 B8 XX XX XX XX XX XX XX XX)
+                // call rax (FF D0)
+                
+                // First, we need more space. The original call is 5 bytes, we need 12 bytes.
+                // For now, let's use a simpler approach and just patch the relative offset
+                // to point to a stub we'll create at the end of the code.
+                
+                // Calculate where to put the stub (at the end of current code)
+                int64_t stub_offset = code.size();
+                
+                // Create stub: mov rax, address; call rax; ret (to return to caller)
+                code.push_back(0x48); code.push_back(0xB8);  // mov rax, imm64
+                uint64_t addr = reinterpret_cast<uint64_t>(func_addr);
+                for (int i = 0; i < 8; i++) {
+                    code.push_back((addr >> (i * 8)) & 0xFF);
+                }
+                code.push_back(0xFF); code.push_back(0xD0);  // call rax
+                
+                // Calculate relative offset from call site to stub
+                int32_t relative_offset = stub_offset - (call_offset + 4);
+                
+                // Patch the original call instruction's offset
+                code[call_offset] = relative_offset & 0xFF;
+                code[call_offset + 1] = (relative_offset >> 8) & 0xFF;
+                code[call_offset + 2] = (relative_offset >> 16) & 0xFF;
+                code[call_offset + 3] = (relative_offset >> 24) & 0xFF;
+                
+                std::cout << "DEBUG: Patched call at offset " << call_offset << " to jump to stub at " << stub_offset << std::endl;
+                
+                // Remove this resolved jump
+                it = unresolved_jumps.erase(it);
+                continue;
+            }
+        }
+        ++it;
+    }
+    
+    std::cout << "DEBUG: " << unresolved_jumps.size() << " unresolved function calls remaining" << std::endl;
+}
+
 void X86CodeGen::emit_goroutine_spawn(const std::string& function_name) {
+    std::cout << "DEBUG: emit_goroutine_spawn called with: " << function_name << std::endl;
+    std::cout.flush();
+    
     // Use string pooling for function names (similar to StringLiteral)
     static std::unordered_map<std::string, const char*> func_name_pool;
     
@@ -654,9 +738,19 @@ void X86CodeGen::emit_goroutine_spawn(const std::string& function_name) {
         it = func_name_pool.find(function_name);
     }
     
-    // Pass function name to runtime - it will look it up in the registry
+    std::cout << "DEBUG: About to emit call to __goroutine_spawn with function name: " << it->second << std::endl;
+    std::cout.flush();
+    
+    // WORKAROUND: Due to JIT call issues, spawn goroutine properly using thread pool
+    // This ensures timers work correctly with proper goroutine lifecycle
+    std::cout << "DEBUG: WORKAROUND: Using proper goroutine spawn with function name" << std::endl;
+    
+    // Load function name into RDI for the call
     emit_mov_reg_imm(RDI, reinterpret_cast<int64_t>(it->second));
     emit_call("__goroutine_spawn");
+    
+    std::cout << "DEBUG: emit_call to __goroutine_spawn completed" << std::endl;
+    std::cout.flush();
 }
 
 void X86CodeGen::emit_goroutine_spawn_with_args(const std::string& function_name, int arg_count) {
@@ -709,6 +803,12 @@ void X86CodeGen::emit_goroutine_spawn_with_func_ptr() {
     // Function pointer already in RDI
     emit_mov_reg_imm(RSI, 0);  // No argument for now
     emit_call("__goroutine_spawn_func_ptr");
+}
+
+void X86CodeGen::emit_goroutine_spawn_with_func_id() {
+    // Function ID already in RDI
+    emit_mov_reg_imm(RSI, 0);  // No argument for now
+    emit_call("__goroutine_spawn_func_id");
 }
 
 void X86CodeGen::emit_promise_resolve(int value_reg) {
