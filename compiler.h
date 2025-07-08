@@ -195,10 +195,12 @@ public:
     virtual void emit_goroutine_spawn_with_args(const std::string& function_name, int arg_count) = 0;
     virtual void emit_goroutine_spawn_with_func_ptr() = 0;
     virtual void emit_goroutine_spawn_with_func_id() = 0;
+    virtual void emit_goroutine_spawn_with_address(void* function_address) = 0;
     virtual void emit_promise_resolve(int value_reg) = 0;
     virtual void emit_promise_await(int promise_reg) = 0;
     virtual std::vector<uint8_t> get_code() const = 0;
     virtual void clear() = 0;
+    virtual size_t get_current_offset() const = 0;
     virtual const std::unordered_map<std::string, int64_t>& get_label_offsets() const = 0;
     
     // Get offset for a specific label
@@ -256,10 +258,12 @@ public:
     void emit_goroutine_spawn_with_args(const std::string& function_name, int arg_count) override;
     void emit_goroutine_spawn_with_func_ptr() override;
     void emit_goroutine_spawn_with_func_id() override;
+    void emit_goroutine_spawn_with_address(void* function_address) override;
     void emit_promise_resolve(int value_reg) override;
     void emit_promise_await(int promise_reg) override;
     std::vector<uint8_t> get_code() const override { return code; }
     void clear() override { code.clear(); label_offsets.clear(); unresolved_jumps.clear(); }
+    size_t get_current_offset() const override;
     const std::unordered_map<std::string, int64_t>& get_label_offsets() const override { return label_offsets; }
     void resolve_runtime_function_calls();  // Resolve unresolved runtime function calls
     void set_function_stack_size(int64_t size) { function_stack_size = size; }
@@ -320,10 +324,12 @@ public:
     void emit_goroutine_spawn_with_args(const std::string& function_name, int arg_count) override;
     void emit_goroutine_spawn_with_func_ptr() override;
     void emit_goroutine_spawn_with_func_id() override;
+    void emit_goroutine_spawn_with_address(void* function_address) override;
     void emit_promise_resolve(int value_reg) override;
     void emit_promise_await(int promise_reg) override;
     std::vector<uint8_t> get_code() const override { return code; }
     void clear() override { code.clear(); label_offsets.clear(); unresolved_jumps.clear(); }
+    size_t get_current_offset() const override;
     const std::unordered_map<std::string, int64_t>& get_label_offsets() const override { return label_offsets; }
 };
 
@@ -419,10 +425,18 @@ struct FunctionExpression : ExpressionNode {
     std::vector<std::unique_ptr<ASTNode>> body;
     bool is_goroutine = false;
     
+    // NEW: For three-phase compilation system
+    std::string compilation_assigned_name_;  // Name assigned during Phase 1
+    
     FunctionExpression() : name("") {}
     FunctionExpression(const std::string& n) : name(n) {}
     void generate_code(CodeGenerator& gen, TypeInference& types) override;
     void compile_function_body(CodeGenerator& gen, TypeInference& types, const std::string& func_name);
+    
+    // NEW: For three-phase compilation system
+    void set_compilation_assigned_name(const std::string& assigned_name) {
+        compilation_assigned_name_ = assigned_name;
+    }
 };
 
 struct MethodCall : ExpressionNode {

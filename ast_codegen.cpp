@@ -2,6 +2,7 @@
 #include "runtime.h"
 #include "runtime_object.h"
 #include "compilation_context.h"
+#include "function_compilation_manager.h"
 #include <iostream>
 #include <unordered_map>
 #include <cstring>
@@ -622,7 +623,7 @@ void FunctionCall::generate_code(CodeGenerator& gen, TypeInference& types) {
                     case 5: gen.emit_mov_reg_reg(9, 0); break;  // R9 = RAX
                 }
             }
-            gen.emit_call("__runtime_timer_set_timeout");
+            gen.emit_call("__gots_set_timeout");
             result_type = DataType::INT64; // Timer ID
             return; // Skip normal function call handling
         } else if (name == "setInterval") {
@@ -637,7 +638,7 @@ void FunctionCall::generate_code(CodeGenerator& gen, TypeInference& types) {
                     case 5: gen.emit_mov_reg_reg(9, 0); break;  // R9 = RAX
                 }
             }
-            gen.emit_call("__runtime_timer_set_interval");
+            gen.emit_call("__gots_set_interval");
             result_type = DataType::INT64; // Timer ID
             return;
         } else if (name == "clearTimeout") {
@@ -652,7 +653,7 @@ void FunctionCall::generate_code(CodeGenerator& gen, TypeInference& types) {
                     case 5: gen.emit_mov_reg_reg(9, 0); break;  // R9 = RAX
                 }
             }
-            gen.emit_call("__runtime_timer_clear_timeout");
+            gen.emit_call("__gots_clear_timeout");
             result_type = DataType::BOOLEAN; // Success/failure
             return;
         } else if (name == "clearInterval") {
@@ -667,7 +668,7 @@ void FunctionCall::generate_code(CodeGenerator& gen, TypeInference& types) {
                     case 5: gen.emit_mov_reg_reg(9, 0); break;  // R9 = RAX
                 }
             }
-            gen.emit_call("__runtime_timer_clear_interval");
+            gen.emit_call("__gots_clear_interval");
             result_type = DataType::BOOLEAN; // Success/failure
             return;
         }
@@ -1035,50 +1036,73 @@ void MethodCall::generate_code(CodeGenerator& gen, TypeInference& types) {
 }
 
 void FunctionExpression::generate_code(CodeGenerator& gen, TypeInference& types) {
-    // Generate unique function name
-    static int func_expr_counter = 0;
-    int current_func_id = func_expr_counter++;
-    std::string func_name = name.empty() ? 
-        ("__func_expr_" + std::to_string(current_func_id)) : name;
+    // NEW THREE-PHASE SYSTEM: Function should already be compiled in Phase 2
+    // During Phase 3, we just generate the appropriate code to reference the function
     
-    std::cout << "DEBUG: Compiling function expression: " << func_name << std::endl;
+    std::cout << "DEBUG: Phase 3 - Generating code for function expression at " << this << std::endl;
+    std::cout << "DEBUG: Function expression compilation_assigned_name_: '" << compilation_assigned_name_ << "'" << std::endl;
     
-    // DEBUG: Check AST body integrity
-    std::cout << "DEBUG: Function has " << body.size() << " statements" << std::endl;
-    for (size_t i = 0; i < body.size(); i++) {
-        if (body[i]) {
-            std::cout << "DEBUG: Statement " << i << " is valid" << std::endl;
+    // The function should already be registered in the FunctionCompilationManager
+    // We need to find its name and address
+    std::string func_name = compilation_assigned_name_;
+    if (func_name.empty()) {
+        std::cerr << "ERROR: Function expression at " << this << " has no assigned name during Phase 3!" << std::endl;
+        std::cerr << "ERROR: Current compilation_assigned_name_: '" << compilation_assigned_name_ << "'" << std::endl;
+        throw std::runtime_error("Function not properly registered in compilation manager");
+    }
+    
+    // Get the function address from the compilation manager
+    void* func_address = FunctionCompilationManager::instance().get_function_address(func_name);
+    if (!func_address) {
+        // If address is not available, we're likely in Phase 2 compilation
+        // In this case, emit a function call by name that will be resolved later
+        std::cout << "DEBUG: Function " << func_name << " address not available, emitting call by name" << std::endl;
+        
+        if (is_goroutine) {
+            // For goroutines, emit a call to spawn the function by name
+            std::cout << "DEBUG: FunctionExpression is_goroutine=true, calling emit_goroutine_spawn" << std::endl;
+            gen.emit_goroutine_spawn(func_name);
+            result_type = DataType::PROMISE;
         } else {
-            std::cout << "DEBUG: ERROR - Statement " << i << " is null!" << std::endl;
+            // For regular function expressions (callbacks), emit a call to get function address
+            std::cout << "DEBUG: FunctionExpression emitting call to get function address for: " << func_name << std::endl;
+            
+            // Store the function name string in memory for the runtime call
+            static std::unordered_map<std::string, const char*> name_storage;
+            
+            // Check if we already have this name stored
+            auto it = name_storage.find(func_name);
+            const char* name_ptr;
+            if (it != name_storage.end()) {
+                name_ptr = it->second;
+            } else {
+                // Allocate permanent storage for this function name
+                char* permanent_name = new char[func_name.length() + 1];
+                strcpy(permanent_name, func_name.c_str());
+                name_storage[func_name] = permanent_name;
+                name_ptr = permanent_name;
+            }
+            
+            // Pass the function name to the runtime lookup function
+            uint64_t name_addr = reinterpret_cast<uint64_t>(name_ptr);
+            gen.emit_mov_reg_imm(7, static_cast<int64_t>(name_addr)); // RDI = function name
+            gen.emit_call("__lookup_function"); // This function already exists in the runtime
+            result_type = DataType::FUNCTION;
         }
+        return;
     }
     
-    // IMMEDIATE COMPILATION: Compile the function immediately instead of deferring
-    // This avoids all memory management issues with deferred compilation
-    std::cout << "DEBUG: Using immediate compilation to avoid memory issues" << std::endl;
-    
-    try {
-        compile_function_body(gen, types, func_name);
-        std::cout << "DEBUG: Immediate compilation succeeded for " << func_name << std::endl;
-    } catch (const std::exception& e) {
-        std::cerr << "ERROR: Immediate compilation failed for " << func_name << ": " << e.what() << std::endl;
-        throw;
-    }
+    std::cout << "DEBUG: Function " << func_name << " has address " << func_address << std::endl;
     
     if (is_goroutine) {
-        // Just emit the goroutine spawn call - function is already compiled
-        std::cout << "DEBUG: FunctionExpression is_goroutine=true, calling emit_goroutine_spawn" << std::endl;
-        gen.emit_goroutine_spawn(func_name);
+        // For goroutines, emit a call to spawn the function
+        std::cout << "DEBUG: FunctionExpression is_goroutine=true, calling emit_goroutine_spawn_with_address" << std::endl;
+        gen.emit_goroutine_spawn_with_address(func_address);
         result_type = DataType::PROMISE;
     } else {
-        // Return function ID for callback registration
-        int64_t func_id = std::hash<std::string>{}(func_name);
-        
-        // Register function ID with name for runtime callback lookup
-        __register_function_id(func_id, func_name);
-        std::cout << "DEBUG: Registered function ID " << func_id << " for function " << func_name << std::endl;
-        
-        gen.emit_mov_reg_imm(0, func_id); // RAX = function ID
+        // For regular function expressions (callbacks), return the function address
+        std::cout << "DEBUG: FunctionExpression returning function address for callback" << std::endl;
+        gen.emit_mov_reg_imm(0, reinterpret_cast<int64_t>(func_address)); // RAX = function address
         result_type = DataType::FUNCTION;
     }
 }
@@ -1324,13 +1348,13 @@ void ExpressionMethodCall::generate_code(CodeGenerator& gen, TypeInference& type
             } else if (sub_object == "process" && method_name == "cwd") {
                 function_name = "__runtime_process_cwd";
             } else if (sub_object == "timer" && method_name == "setTimeout") {
-                function_name = "__runtime_timer_set_timeout";
+                function_name = "__gots_set_timeout";
             } else if (sub_object == "timer" && method_name == "clearTimeout") {
-                function_name = "__runtime_timer_clear_timeout";
+                function_name = "__gots_clear_timeout";
             } else if (sub_object == "timer" && method_name == "setInterval") {
-                function_name = "__runtime_timer_set_interval";
+                function_name = "__gots_set_interval";
             } else if (sub_object == "timer" && method_name == "clearInterval") {
-                function_name = "__runtime_timer_clear_interval";
+                function_name = "__gots_clear_interval";
             }
             // Add more mappings as needed
             

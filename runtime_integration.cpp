@@ -1,4 +1,4 @@
-#include "goroutine_system.h"
+// Old goroutine system removed
 #include "runtime.h"
 #include <iostream>
 #include <unordered_map>

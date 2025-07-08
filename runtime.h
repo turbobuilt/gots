@@ -527,99 +527,10 @@ struct Promise {
     }
 };
 
-// Forward declaration for circular dependency
-class GoroutineScheduler;
-
-// High-Performance Timer Entry for enhanced scheduler
-// Uses function names to avoid JIT function pointer invalidation
-struct TimerEntry {
-    int64_t id;
-    std::chrono::steady_clock::time_point execute_time;
-    
-    // Store function name instead of direct pointer to prevent JIT invalidation
-    std::string callback_function_name;
-    
-    // Also support direct function pointer for deferred timers
-    void* callback_function_ptr = nullptr;
-    
-    bool is_interval = false;
-    int64_t interval_ms = 0;
-    
-    // Goroutine context for suspended execution
-    std::shared_ptr<void> suspended_context;
-    
-    // Min-heap comparison (earlier times have higher priority)
-    bool operator>(const TimerEntry& other) const {
-        return execute_time > other.execute_time;
-    }
-};
-
-// Legacy typedef for backward compatibility
-using MainThreadTimerEntry = TimerEntry;
-
-// Per-goroutine timer system - proper Node.js-style event loop
-// Global timer ID counter
-extern std::atomic<int64_t> g_timer_id_counter;
-
-// Global active timer count for program exit coordination
-extern std::atomic<int64_t> g_active_timer_count;
-
-// Global active goroutine count
-extern std::atomic<int64_t> g_active_goroutine_count;
-
-// Global map of cancelled timer IDs (for cross-goroutine cancellation)
-extern std::unordered_set<int64_t> g_cancelled_timers;
-extern std::mutex g_cancelled_timers_mutex;
-
-// Timer queue manager for each goroutine
-class GoroutineTimerManager {
-private:
-    // Priority queue of timers sorted by execution time (earliest first)
-    std::priority_queue<TimerEntry, std::vector<TimerEntry>, std::greater<TimerEntry>> timer_queue;
-    mutable std::mutex queue_mutex;
-    std::condition_variable timer_condition;
-    std::atomic<bool> should_exit{false};
-    
-public:
-    GoroutineTimerManager() = default;
-    ~GoroutineTimerManager() = default;
-    
-    // Add a timer to this goroutine's queue
-    void add_timer(const TimerEntry& timer);
-    
-    // Remove/cancel a timer from this goroutine's queue
-    bool cancel_timer(int64_t timer_id);
-    
-    // Process timers for this goroutine (called after main code execution)
-    void process_timers();
-    
-    // Check if this goroutine has any pending timers
-    bool has_pending_timers() const;
-    
-    // Signal this goroutine to exit its timer processing
-    void signal_exit();
-    
-    // Get next timer execution time (for sleep calculation)
-    std::optional<std::chrono::steady_clock::time_point> get_next_timer_time() const;
-};
-
-// Per-thread timer managers (one per goroutine thread)
-extern thread_local std::unique_ptr<GoroutineTimerManager> g_thread_timer_manager;
-
-// Get or create timer manager for current thread
-GoroutineTimerManager& get_timer_manager();
-
-// New timer functions
-int64_t create_timer_new(int64_t delay_ms, void* callback, bool is_interval = false);
-bool cancel_timer_new(int64_t timer_id);
-bool has_active_timers_new();
-bool has_active_work_new();
-
-// Legacy timer functions (for backward compatibility during transition)
-int64_t create_timer(int64_t delay_ms, void* callback, bool is_interval = false);
-bool cancel_timer(int64_t timer_id);
-bool has_active_timers();
-bool has_active_work();
+// Forward declaration - using new goroutine system
+namespace gots {
+    class GoroutineScheduler;
+}
 
 class ThreadPool {
     
@@ -643,63 +554,7 @@ public:
     void shutdown();
 };
 
-class GoroutineScheduler {
-public:
-    ThreadPool thread_pool;
-private:
-    std::unordered_map<std::thread::id, std::queue<std::function<void()>>> event_loops;
-    std::mutex event_loop_mutex;
-    std::atomic<uint64_t> next_goroutine_id{1};
-    std::atomic<int64_t> active_goroutine_count{0};
-    
-    struct GoroutineContext {
-        uint64_t id;
-        std::shared_ptr<Promise> promise;
-        std::function<void()> task;
-        bool is_main_thread;
-        std::shared_ptr<void> captured_scope;  // Lexical environment (void* to avoid circular dependency)
-    };
-    
-    std::unordered_map<uint64_t, GoroutineContext> active_goroutines;
-    std::mutex goroutine_mutex;
-    
-public:
-    GoroutineScheduler();
-    ~GoroutineScheduler();
-    
-    template<typename F, typename... Args>
-    std::shared_ptr<Promise> spawn(F&& f, Args&&... args);
-    
-    std::shared_ptr<Promise> spawn_with_scope_impl(std::function<void()> task, std::shared_ptr<void> captured_scope);
-    
-    template<typename F>
-    std::shared_ptr<Promise> spawn_with_scope(F&& f, std::shared_ptr<LexicalScope> captured_scope);
-    
-    void process_event_loop();
-    void add_to_event_loop(std::function<void()> task);
-    
-    template<typename T>
-    std::vector<T> promise_all(const std::vector<std::shared_ptr<Promise>>& promises);
-    
-    static GoroutineScheduler& instance();
-    
-    // Goroutine tracking methods
-    bool has_active_goroutines() const {
-        return active_goroutine_count.load() > 0;
-    }
-    
-    int64_t get_active_goroutine_count() const {
-        return active_goroutine_count.load();
-    }
-    
-    void increment_active_count() {
-        active_goroutine_count.fetch_add(1);
-    }
-    
-    void decrement_active_count() {
-        active_goroutine_count.fetch_sub(1);
-    }
-};
+// Old GoroutineScheduler removed - using new system from goroutine_system.h
 
 class SharedMemory {
 private:
@@ -1240,59 +1095,7 @@ auto ThreadPool::enqueue(F&& f, Args&&... args) -> std::future<typename std::res
     return future;
 }
 
-template<typename F, typename... Args>
-std::shared_ptr<Promise> GoroutineScheduler::spawn(F&& f, Args&&... args) {
-    std::cout << "DEBUG: Creating promise..." << std::endl;
-    auto promise = std::make_shared<Promise>();
-    std::cout << "DEBUG: Promise created" << std::endl;
-    
-    // Create a simple task that avoids std::bind and complex lambda captures
-    std::cout << "DEBUG: Creating lambda task..." << std::endl;
-    std::function<void()> simple_task = [promise, f]() mutable {
-        try {
-            std::cout << "DEBUG: Goroutine task starting in worker thread..." << std::endl;
-            auto result = f();
-            std::cout << "DEBUG: Goroutine task completed with result: " << result << std::endl;
-            promise->resolve(result);
-        } catch (...) {
-            std::cout << "DEBUG: Goroutine task caught exception" << std::endl;
-            promise->resolve(static_cast<int64_t>(0));
-        }
-    };
-    
-    std::cout << "DEBUG: Lambda created, enqueueing task..." << std::endl;
-    thread_pool.enqueue_simple(simple_task);
-    std::cout << "DEBUG: Task enqueued" << std::endl;
-    return promise;
-}
-
-template<typename F>
-std::shared_ptr<Promise> GoroutineScheduler::spawn_with_scope(F&& f, std::shared_ptr<LexicalScope> captured_scope) {
-    auto task = [f = std::forward<F>(f)]() {
-        f();
-    };
-    
-    std::shared_ptr<void> scope_ptr = nullptr;
-    if (captured_scope) {
-        scope_ptr = std::static_pointer_cast<void>(captured_scope);
-    }
-    
-    return spawn_with_scope_impl(task, scope_ptr);
-}
-
-// Template implementation moved to runtime.cpp to avoid circular dependency
-
-template<typename T>
-std::vector<T> GoroutineScheduler::promise_all(const std::vector<std::shared_ptr<Promise>>& promises) {
-    std::vector<T> results;
-    results.reserve(promises.size());
-    
-    for (const auto& promise : promises) {
-        results.push_back(promise->await<T>());
-    }
-    
-    return results;
-}
+// Old GoroutineScheduler template implementations removed - using new system
 
 template<typename T>
 void SharedMemory::set_global(const std::string& name, T&& value) {

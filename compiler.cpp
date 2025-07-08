@@ -1,6 +1,8 @@
 #include "compiler.h"
 #include "runtime.h"
 #include "runtime_syscalls.h"
+#include "goroutine_system.h"
+#include "function_compilation_manager.h"
 
 // External console mutex for thread safety
 extern std::mutex g_console_mutex;
@@ -12,9 +14,9 @@ extern std::mutex g_console_mutex;
 #include <thread>
 #include <chrono>
 
-// Forward declaration of runtime registration function
-extern "C" void __runtime_register_global();
-extern "C" void __runtime_process_deferred_timers();
+// New goroutine system functions
+extern "C" void __runtime_spawn_main_goroutine(void* func_ptr);
+extern "C" void __runtime_wait_for_main_goroutine();
 
 namespace gots {
 
@@ -82,6 +84,15 @@ void GoTSCompiler::compile(const std::string& source) {
                 std::cout << std::endl;
             }
         }
+        
+        // NEW THREE-PHASE COMPILATION SYSTEM
+        std::cout << "DEBUG: Starting Three-Phase Compilation System" << std::endl;
+        FunctionCompilationManager::instance().clear();
+        FunctionCompilationManager::instance().discover_functions(ast);
+        
+        // PHASE 2: FUNCTION COMPILATION
+        // Compile all functions to the beginning of the code section
+        FunctionCompilationManager::instance().compile_all_functions(*codegen, type_system);
         
         // Check if we have any function declarations or class definitions
         bool has_functions = false;
@@ -219,8 +230,7 @@ void GoTSCompiler::execute() {
         
         __runtime_init();
         
-        // Register the global runtime object for syscall access
-        __runtime_register_global();
+        // Runtime registration happens automatically in new system
         
         // PRODUCTION FIX: Resolve any unresolved runtime function calls now that the registry is populated
         // We need to patch the code while it's still writable
@@ -249,6 +259,12 @@ void GoTSCompiler::execute() {
             munmap(exec_mem, aligned_size);
             return;
         }
+        
+        // PHASE 2.5: ASSIGN FUNCTION ADDRESSES
+        // Now that we have executable memory, assign addresses to all functions
+        FunctionCompilationManager::instance().assign_function_addresses(exec_mem, aligned_size);
+        FunctionCompilationManager::instance().register_function_in_runtime();
+        FunctionCompilationManager::instance().print_function_registry();
         
         // Register all functions in the runtime registry
         auto& label_offsets = codegen->get_label_offsets();
@@ -292,17 +308,18 @@ void GoTSCompiler::execute() {
         std::cout << "DEBUG: Function pointer created successfully" << std::endl;
         std::cout << "DEBUG: func address = " << (void*)func << std::endl;
         
-        // Call the JIT function
+        // Spawn the main function as the main goroutine - ALL JS runs in goroutines
         int result = 0;
         try {
-            std::cout << "DEBUG: About to call JIT function..." << std::endl;
-        std::cout << "DEBUG: Main function starts at offset " << main_it->second << std::endl;
+            std::cout << "DEBUG: About to spawn main function as main goroutine..." << std::endl;
+            std::cout << "DEBUG: Main function starts at offset " << main_it->second << std::endl;
             std::cout.flush();
             
-            result = func();
+            // Spawn main function as the top-level goroutine
+            __runtime_spawn_main_goroutine(reinterpret_cast<void*>(func));
             {
                 std::lock_guard<std::mutex> lock(g_console_mutex);
-                std::cout << "DEBUG: Main function call completed, result: " << result << std::endl;
+                std::cout << "DEBUG: Main goroutine spawned successfully" << std::endl;
                 std::cout.flush();
             }
             
@@ -312,20 +329,7 @@ void GoTSCompiler::execute() {
                 std::cout << "DEBUG: Main execution complete - simplified timer system running" << std::endl;
             }
             
-            // Process any deferred timers that were registered during main execution
-            {
-                std::lock_guard<std::mutex> lock(g_console_mutex);
-                std::cout << "DEBUG: Processing deferred timers" << std::endl;
-            }
-            try {
-                extern void __runtime_process_deferred_timers();
-                __runtime_process_deferred_timers();
-                std::cout << "DEBUG: Deferred timers processed successfully" << std::endl;
-            } catch (const std::exception& e) {
-                std::cout << "DEBUG: Error processing deferred timers: " << e.what() << std::endl;
-            } catch (...) {
-                std::cout << "DEBUG: Unknown error processing deferred timers" << std::endl;
-            }
+            // Timer processing is now handled by the main goroutine's event loop
             
             // If we have timers, start the timer scheduler
             // For now, just exit cleanly since timer execution is complex
@@ -336,17 +340,12 @@ void GoTSCompiler::execute() {
             std::cerr << "Unknown exception caught during program execution" << std::endl;
         }
         
-        std::cout << "DEBUG: About to wait for timers before cleanup" << std::endl;
-        // Wait for all active timers to complete before cleanup
-        __runtime_timer_wait_all();
-        std::cout << "DEBUG: Timer wait completed" << std::endl;
+        std::cout << "DEBUG: Main function completed - waiting for main goroutine to exit" << std::endl;
+        // Wait for main goroutine to complete (which will wait for all its children and timers)
+        // This is the ONLY wait the main loop should do - never wait for timers directly
+        __runtime_wait_for_main_goroutine();
+        std::cout << "DEBUG: Main goroutine completed - all children and timers are done" << std::endl;
         
-        std::cout << "DEBUG: About to call __runtime_timer_cleanup()" << std::endl;
-        __runtime_timer_cleanup();
-        std::cout << "DEBUG: __runtime_timer_cleanup() completed" << std::endl;
-        
-        // IMPORTANT: Only call __runtime_cleanup() AFTER timer cleanup is complete
-        // This ensures executable memory containing timer callbacks isn't freed prematurely
         std::cout << "DEBUG: About to call __runtime_cleanup()" << std::endl;
         __runtime_cleanup();
         std::cout << "DEBUG: __runtime_cleanup() completed" << std::endl;

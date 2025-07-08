@@ -1128,34 +1128,31 @@ void __runtime_timer_wait_all() {
     std::cout << "DEBUG: __runtime_timer_wait_all called (new timer system)!" << std::endl;
     std::cout.flush();
     
-    try {
-        // Start timer processing for current goroutine
-        gots::GoroutineTimerManager& manager = gots::get_timer_manager();
-        std::cout << "DEBUG: Got timer manager, starting processing..." << std::endl;
-        manager.process_timers();
-        std::cout << "DEBUG: Timer processing completed for current goroutine" << std::endl;
-    } catch (const std::exception& e) {
-        std::cerr << "ERROR: Exception in timer processing: " << e.what() << std::endl;
-    } catch (...) {
-        std::cerr << "ERROR: Unknown exception in timer processing" << std::endl;
-    }
+    // In new system, timer processing is handled by goroutine event loops
+    // This function is just a placeholder now
 }
 
 // Add this function to runtime cleanup to stop the event loop
 void __runtime_timer_cleanup() {
     std::cout << "DEBUG: Timer cleanup called (new timer system)" << std::endl;
     
-    // Signal timer manager to exit if it exists for this thread
-    if (gots::g_thread_timer_manager) {
-        gots::g_thread_timer_manager->signal_exit();
-    }
+    // In new system, cleanup is handled by goroutine scheduler
+    // This function is just a placeholder now
+}
+
+// Process deferred timers - placeholder for old system
+void __runtime_process_deferred_timers() {
+    std::cout << "DEBUG: __runtime_process_deferred_timers called (new timer system)!" << std::endl;
+    
+    // In new system, timer processing is handled by goroutine event loops
+    // This function is just a placeholder now
 }
 
 int64_t __runtime_timer_set_interval(void* callback, int64_t delay) {
     std::cout << "DEBUG: __runtime_timer_set_interval called (new timer system)!" << std::endl;
     
-    // Use new timer system for interval timers
-    int64_t timer_id = create_timer_new(delay, callback, true);
+    // Use new timer system directly (bypass wrapper)
+    int64_t timer_id = __gots_set_interval(callback, delay);
     
     std::cout << "DEBUG: Interval timer " << timer_id << " created with " << delay << "ms delay using new system" << std::endl;
     return timer_id;
@@ -1166,16 +1163,12 @@ int64_t __runtime_timer_set_immediate(void* callback) {
     return __runtime_timer_set_timeout(callback, 0);
 }
 
-// Function to process all deferred timer requests after main execution completes
-void __runtime_process_deferred_timers() {
-    std::cout << "DEBUG: __runtime_process_deferred_timers called (simplified - no longer needed)" << std::endl;
-    // No deferred processing needed with simplified goroutine-based timers
-}
+// Function removed - now defined earlier in the file
 bool __runtime_timer_clear_timeout(int64_t id) {
     std::cout << "DEBUG: clearTimeout called for id=" << id << " (new timer system)" << std::endl;
     
-    // Use the new timer cancellation system
-    bool result = cancel_timer_new(id);
+    // Use the new timer cancellation system directly (bypass wrapper)
+    bool result = __gots_clear_timeout(id);
     std::cout << "DEBUG: Timer " << id << (result ? " cancelled successfully" : " cancellation failed") << " using new system" << std::endl;
     return result;
 }
@@ -1833,7 +1826,7 @@ int64_t __runtime_test_simple() {
 extern "C" {
 // Registration function called at startup
 void __runtime_register_global() {
-    gots::initialize_runtime_object();
+    initialize_runtime_object();
     
     // Register all runtime syscall functions in the JIT function registry
     extern void __register_function(const char* name, void* func_ptr);
@@ -1899,6 +1892,8 @@ void __runtime_register_global() {
     extern void* __goroutine_spawn_with_scope(const char* function_name, void* captured_scope);
     extern void* __goroutine_spawn_func_ptr(void* func_ptr, void* arg);
     extern void* __goroutine_spawn_func_id(int64_t func_id, void* arg);
+    extern void* __goroutine_spawn_with_arg1_ptr(const char* function_name, void* arg1);
+    extern void* __goroutine_spawn_with_arg2_ptr(const char* function_name, void* arg1, void* arg2);
     
     // Function lookup
     extern void* __lookup_function(const char* name);

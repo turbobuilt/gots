@@ -5,14 +5,6 @@
 #include <algorithm>
 #include <unordered_map>
 
-// Forward declarations for runtime functions
-extern "C" int64_t __gots_set_timeout(void* callback, int64_t delay_ms);
-extern "C" int64_t __gots_set_interval(void* callback, int64_t delay_ms);  
-extern "C" bool __gots_clear_timeout(int64_t timer_id);
-extern "C" bool __gots_clear_interval(int64_t timer_id);
-extern "C" void* __lookup_function(const char* name);
-extern "C" void __runtime_stub_function();
-
 namespace gots {
 
 enum X86Register {
@@ -280,20 +272,6 @@ void X86CodeGen::emit_call(const std::string& label) {
             func_addr = (void*)__gots_clear_timeout;
         } else if (label == "__gots_clear_interval") {
             func_addr = (void*)__gots_clear_interval;
-        } else if (label == "__lookup_function") {
-            func_addr = (void*)__lookup_function;
-        
-        // Console functions - essential for basic functionality
-        } else if (label == "__console_log") {
-            func_addr = (void*)__console_log;
-        } else if (label == "__console_log_string") {
-            func_addr = (void*)__console_log; // Map to existing function
-        } else if (label == "__console_log_newline") {
-            func_addr = (void*)__console_log_newline;
-        } else if (label == "__console_log_space") {
-            func_addr = (void*)__console_log_space;
-        } else if (label == "__string_intern") {
-            func_addr = (void*)__string_create; // Map to existing function
         
         // Everything else - commented out for now
         /*
@@ -347,8 +325,6 @@ void X86CodeGen::emit_call(const std::string& label) {
             std::cout << "DEBUG: Unimplemented runtime function: " << label << std::endl;
             func_addr = (void*)__runtime_stub_function;
         }
-        /*
-        // All other functions commented out - will be stubbed
         } else if (label == "__typed_array_create_int64") {
             func_addr = (void*)__typed_array_create_int64;
         } else if (label == "__typed_array_create_float32") {
@@ -471,7 +447,6 @@ void X86CodeGen::emit_call(const std::string& label) {
         } else if (label == "__debug_print_pointer") {
             func_addr = (void*)__debug_print_pointer;
         }
-        */
         
         if (func_addr) {
             std::cout << "DEBUG: About to generate call to " << label << " at address " << func_addr << std::endl;
@@ -853,16 +828,6 @@ void X86CodeGen::emit_goroutine_spawn_with_func_id() {
     emit_call("__goroutine_spawn_func_id");
 }
 
-void X86CodeGen::emit_goroutine_spawn_with_address(void* function_address) {
-    std::cout << "DEBUG: emit_goroutine_spawn_with_address called with address: " << function_address << std::endl;
-    
-    // Load function address into RDI register
-    emit_mov_reg_imm(RDI, reinterpret_cast<int64_t>(function_address));
-    
-    // Call the runtime function to spawn goroutine with function address
-    emit_call("__goroutine_spawn_func_ptr");
-}
-
 void X86CodeGen::emit_promise_resolve(int value_reg) {
     emit_mov_reg_reg(RDI, value_reg);
     emit_call("__promise_resolve");
@@ -1113,10 +1078,6 @@ void X86CodeGen::emit_jump_if_less(const std::string& label) {
     code.push_back(0x00);
     code.push_back(0x00);
     code.push_back(0x00);
-}
-
-size_t X86CodeGen::get_current_offset() const {
-    return code.size();
 }
 
 }

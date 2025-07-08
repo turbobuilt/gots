@@ -376,4 +376,13 @@ void WasmCodeGen::emit_call_reg(int reg) {
     emit_leb128(0); // table index
 }
 
+void WasmCodeGen::emit_goroutine_spawn_with_address(void* function_address) {
+    // TODO: Implement WebAssembly goroutine spawn with address
+    (void)function_address;
+}
+
+size_t WasmCodeGen::get_current_offset() const {
+    return code.size();
+}
+
 }
