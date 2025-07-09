@@ -118,8 +118,9 @@ void ThreadPool::enqueue_simple(std::function<void()> task) {
 std::unordered_map<int64_t, std::unique_ptr<ObjectInstance>> object_registry;
 std::atomic<int64_t> next_object_id{1};
 
-// Global function registry for goroutines
-std::unordered_map<std::string, void*> gots_function_registry;
+// High-Performance Function Registry Implementation
+FunctionEntry g_function_table[MAX_FUNCTIONS];
+std::atomic<uint16_t> g_next_function_id{1};  // Start at 1, 0 is reserved for "invalid"
 
 // Global promise registry for cleanup
 static std::unordered_set<void*> g_allocated_promises;
@@ -156,38 +157,31 @@ int64_t __allocate_function_id() {
     return g_next_function_id.fetch_add(1);
 }
 
-extern "C" void* __goroutine_spawn(const char* function_name) {
-    std::cout << "DEBUG: __goroutine_spawn redirecting to new system: " << function_name << std::endl;
+
+// High-Performance Function Registration - O(1) access
+uint16_t __register_function_fast(void* func_ptr, uint16_t arg_count, uint8_t calling_convention) {
+    uint16_t func_id = g_next_function_id.fetch_add(1);
     
-    // Look up function in registry
-    auto it = gots_function_registry.find(std::string(function_name));
-    if (it == gots_function_registry.end()) {
-        std::cerr << "ERROR: Function " << function_name << " not found in registry" << std::endl;
-        return nullptr;
+    if (func_id >= MAX_FUNCTIONS) {
+        std::cerr << "ERROR: Function table overflow! Maximum " << MAX_FUNCTIONS << " functions supported." << std::endl;
+        return 0;  // Return invalid ID
     }
     
-    void* func_ptr = it->second;
-    std::cout << "DEBUG: Found function " << function_name << " at " << func_ptr << std::endl;
+    FunctionEntry& entry = g_function_table[func_id];
+    entry.func_ptr = func_ptr;
+    entry.arg_count = arg_count;
+    entry.calling_convention = calling_convention;
+    entry.flags = 0;
     
-    // Use NEW goroutine system
-    auto task = [func_ptr, function_name]() {
-        std::cout << "DEBUG: New goroutine executing function: " << function_name << std::endl;
-        
-        typedef int64_t (*FuncType)();
-        FuncType func = reinterpret_cast<FuncType>(func_ptr);
-        return func();
-    };
-    
-    // Spawn using NEW goroutine system  
-    GoroutineScheduler::instance().spawn(task);
-    
-    // Return dummy for compatibility
-    return reinterpret_cast<void*>(1);
+    return func_id;
 }
 
-void __register_function(const char* name, void* func_ptr) {
-    std::cerr << "DEBUG: Registering function: " << name << " at address: " << func_ptr << std::endl;
-    gots_function_registry[std::string(name)] = func_ptr;
+void* __lookup_function_fast(uint16_t func_id) {
+    if (func_id == 0 || func_id >= g_next_function_id.load()) {
+        return nullptr;  // Invalid function ID
+    }
+    
+    return g_function_table[func_id].func_ptr;
 }
 
 // Initialize the new goroutine system
@@ -204,26 +198,16 @@ void __runtime_cleanup() {
 
 // Main goroutine functions moved to goroutine_system.cpp
 
-// Proper implementations of goroutine functions for the new system
-
-void* __goroutine_spawn_with_scope(const char* function_name, void* captured_scope) {
-    std::cout << "DEBUG: __goroutine_spawn_with_scope called with: " << function_name << std::endl;
-    
-    // Look up function in registry
-    auto it = gots_function_registry.find(std::string(function_name));
-    if (it == gots_function_registry.end()) {
-        std::cerr << "ERROR: Function " << function_name << " not found in registry" << std::endl;
+// Optimized goroutine spawn with direct function IDs - NO string lookups
+void* __goroutine_spawn_fast(uint16_t func_id) {
+    void* func_ptr = __lookup_function_fast(func_id);
+    if (!func_ptr) {
+        std::cerr << "ERROR: Invalid function ID: " << func_id << std::endl;
         return nullptr;
     }
     
-    void* func_ptr = it->second;
-    
-    // Create a task that calls the function with captured scope
-    auto task = [func_ptr, captured_scope, function_name]() {
-        std::cout << "DEBUG: Goroutine executing function: " << function_name << " with scope" << std::endl;
-        
-        // Set up lexical scope context for this goroutine if needed
-        // For now, just call the function normally
+    // Create a task that calls the function directly - minimal overhead
+    auto task = [func_ptr]() {
         typedef int64_t (*FuncType)();
         FuncType func = reinterpret_cast<FuncType>(func_ptr);
         return func();
@@ -233,51 +217,15 @@ void* __goroutine_spawn_with_scope(const char* function_name, void* captured_sco
     return reinterpret_cast<void*>(1);
 }
 
-void* __goroutine_spawn_func_ptr(void* func_ptr, void* arg) {
-    std::cout << "DEBUG: __goroutine_spawn_func_ptr called" << std::endl;
-    
-    // Create a task that calls the function pointer with argument
-    auto task = [func_ptr, arg]() {
-        std::cout << "DEBUG: Goroutine executing function pointer with arg" << std::endl;
-        
-        typedef int64_t (*FuncType)(void*);
-        FuncType func = reinterpret_cast<FuncType>(func_ptr);
-        return func(arg);
-    };
-    
-    GoroutineScheduler::instance().spawn(task);
-    return reinterpret_cast<void*>(1);
-}
-
-void* __goroutine_spawn_func_id(int64_t func_id, void* arg) {
-    std::cout << "DEBUG: __goroutine_spawn_func_id called with ID: " << func_id << std::endl;
-    
-    // Look up function by ID and spawn it
-    void* func_ptr = __lookup_function_by_id(func_id);
-    if (func_ptr) {
-        return __goroutine_spawn_func_ptr(func_ptr, arg);
-    }
-    std::cerr << "ERROR: Function ID " << func_id << " not found" << std::endl;
-    return nullptr;
-}
-
-// Handle both int64_t and void* versions of argument functions
-void* __goroutine_spawn_with_arg1(const char* function_name, int64_t arg1) {
-    std::cout << "DEBUG: __goroutine_spawn_with_arg1 (int64_t) called with: " << function_name << std::endl;
-    
-    // Look up function in registry
-    auto it = gots_function_registry.find(std::string(function_name));
-    if (it == gots_function_registry.end()) {
-        std::cerr << "ERROR: Function " << function_name << " not found in registry" << std::endl;
+void* __goroutine_spawn_fast_arg1(uint16_t func_id, int64_t arg1) {
+    void* func_ptr = __lookup_function_fast(func_id);
+    if (!func_ptr) {
+        std::cerr << "ERROR: Invalid function ID: " << func_id << std::endl;
         return nullptr;
     }
     
-    void* func_ptr = it->second;
-    
-    // Create a task that calls the function with one argument
-    auto task = [func_ptr, arg1, function_name]() {
-        std::cout << "DEBUG: Goroutine executing function: " << function_name << " with arg1=" << arg1 << std::endl;
-        
+    // Create a task that calls the function with one argument - minimal overhead
+    auto task = [func_ptr, arg1]() {
         typedef int64_t (*FuncType)(int64_t);
         FuncType func = reinterpret_cast<FuncType>(func_ptr);
         return func(arg1);
@@ -287,73 +235,16 @@ void* __goroutine_spawn_with_arg1(const char* function_name, int64_t arg1) {
     return reinterpret_cast<void*>(1);
 }
 
-void* __goroutine_spawn_with_arg1_ptr(const char* function_name, void* arg1) {
-    std::cout << "DEBUG: __goroutine_spawn_with_arg1_ptr (void*) called with: " << function_name << std::endl;
-    
-    // Look up function in registry
-    auto it = gots_function_registry.find(std::string(function_name));
-    if (it == gots_function_registry.end()) {
-        std::cerr << "ERROR: Function " << function_name << " not found in registry" << std::endl;
+void* __goroutine_spawn_fast_arg2(uint16_t func_id, int64_t arg1, int64_t arg2) {
+    void* func_ptr = __lookup_function_fast(func_id);
+    if (!func_ptr) {
+        std::cerr << "ERROR: Invalid function ID: " << func_id << std::endl;
         return nullptr;
     }
     
-    void* func_ptr = it->second;
-    
-    // Create a task that calls the function with one argument
-    auto task = [func_ptr, arg1, function_name]() {
-        std::cout << "DEBUG: Goroutine executing function: " << function_name << " with arg1" << std::endl;
-        
-        typedef int64_t (*FuncType)(void*);
-        FuncType func = reinterpret_cast<FuncType>(func_ptr);
-        return func(arg1);
-    };
-    
-    GoroutineScheduler::instance().spawn(task);
-    return reinterpret_cast<void*>(1);
-}
-
-void* __goroutine_spawn_with_arg2(const char* function_name, int64_t arg1, int64_t arg2) {
-    std::cout << "DEBUG: __goroutine_spawn_with_arg2 (int64_t) called with: " << function_name << std::endl;
-    
-    // Look up function in registry
-    auto it = gots_function_registry.find(std::string(function_name));
-    if (it == gots_function_registry.end()) {
-        std::cerr << "ERROR: Function " << function_name << " not found in registry" << std::endl;
-        return nullptr;
-    }
-    
-    void* func_ptr = it->second;
-    
-    // Create a task that calls the function with two arguments
-    auto task = [func_ptr, arg1, arg2, function_name]() {
-        std::cout << "DEBUG: Goroutine executing function: " << function_name << " with arg1=" << arg1 << " arg2=" << arg2 << std::endl;
-        
+    // Create a task that calls the function with two arguments - minimal overhead
+    auto task = [func_ptr, arg1, arg2]() {
         typedef int64_t (*FuncType)(int64_t, int64_t);
-        FuncType func = reinterpret_cast<FuncType>(func_ptr);
-        return func(arg1, arg2);
-    };
-    
-    GoroutineScheduler::instance().spawn(task);
-    return reinterpret_cast<void*>(1);
-}
-
-void* __goroutine_spawn_with_arg2_ptr(const char* function_name, void* arg1, void* arg2) {
-    std::cout << "DEBUG: __goroutine_spawn_with_arg2_ptr (void*) called with: " << function_name << std::endl;
-    
-    // Look up function in registry
-    auto it = gots_function_registry.find(std::string(function_name));
-    if (it == gots_function_registry.end()) {
-        std::cerr << "ERROR: Function " << function_name << " not found in registry" << std::endl;
-        return nullptr;
-    }
-    
-    void* func_ptr = it->second;
-    
-    // Create a task that calls the function with two arguments
-    auto task = [func_ptr, arg1, arg2, function_name]() {
-        std::cout << "DEBUG: Goroutine executing function: " << function_name << " with args" << std::endl;
-        
-        typedef int64_t (*FuncType)(void*, void*);
         FuncType func = reinterpret_cast<FuncType>(func_ptr);
         return func(arg1, arg2);
     };
@@ -422,6 +313,12 @@ void* __string_create(const char* str) {
     return (void*)strdup(str);
 }
 
+// String interning for literals - simple implementation for now
+void* __string_intern(const char* str) {
+    // For now, just return a copy - could optimize with interning later
+    return (void*)strdup(str);
+}
+
 void __array_push(void* array, int64_t value) {
     // Basic stub - do nothing for now
     (void)array;
@@ -432,16 +329,7 @@ void __array_push(void* array, int64_t value) {
 
 } // extern "C"
 
-extern "C" void* __lookup_function(const char* name) {
-    std::string func_name(name);
-    auto it = gots_function_registry.find(func_name);
-    if (it != gots_function_registry.end()) {
-        std::cerr << "DEBUG: Found function " << name << " at address: " << it->second << std::endl;
-        return it->second;
-    }
-    std::cerr << "ERROR: Function " << name << " not found in registry!" << std::endl;
-    return nullptr;
-}
+// Legacy function removed - use __lookup_function_fast(func_id) instead
 
 // Thread-local storage for goroutine context
 thread_local bool g_is_goroutine_context = false;
@@ -467,6 +355,38 @@ extern "C" void __set_goroutine_context(int64_t is_goroutine) {
     }
 }
 
+
+} // namespace gots
+
+// Ultra-High-Performance Direct Address Goroutine Spawn
+namespace gots {
+void* __goroutine_spawn_func_ptr(void* func_ptr, void* arg) {
+    std::cout << "DEBUG: __goroutine_spawn_func_ptr called with func_ptr: " << func_ptr << std::endl;
+    
+    // Cast function pointer to proper type and spawn goroutine directly
+    // This is the FASTEST possible goroutine spawn - zero overhead, direct address call
+    if (func_ptr) {
+        // Use the goroutine scheduler to spawn with the function pointer
+        typedef void (*func_t)();
+        func_t function = reinterpret_cast<func_t>(func_ptr);
+        
+        std::function<void()> task = [function]() {
+            function();
+        };
+        
+        GoroutineScheduler::instance().spawn(task, nullptr);
+    } else {
+        std::cerr << "ERROR: __goroutine_spawn_func_ptr called with null function pointer" << std::endl;
+    }
+    
+    return nullptr; // TODO: Return actual goroutine handle if needed
+}
+
+// Get the executable memory base address for relative offset calculations
+extern "C" void* __get_executable_memory_base() {
+    std::lock_guard<std::mutex> lock(g_executable_memory.mutex);
+    return g_executable_memory.ptr;
+}
 
 // Timer system functions moved to goroutine_system.cpp
 

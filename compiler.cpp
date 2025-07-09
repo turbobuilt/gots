@@ -133,6 +133,10 @@ void GoTSCompiler::compile(const std::string& source) {
             }
         }
         
+        // PHASE 2.5: PREPARE FOR MAIN CODE GENERATION
+        // At this point, we need to create executable memory and assign function addresses
+        // before generating main code, so function expressions can use direct addresses
+        
         // Generate main code label
         codegen->emit_label("__main");
         
@@ -286,7 +290,7 @@ void GoTSCompiler::execute() {
             );
             
             std::cout << "DEBUG: Registering function " << name << " at offset " << offset << " (address " << func_addr << ")" << std::endl;
-            __register_function(name.c_str(), func_addr);
+            __register_function_fast(func_addr, 0, 0);
         }
         
         // Find and execute main function

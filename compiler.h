@@ -198,6 +198,13 @@ public:
     virtual void emit_goroutine_spawn_with_address(void* function_address) = 0;
     virtual void emit_promise_resolve(int value_reg) = 0;
     virtual void emit_promise_await(int promise_reg) = 0;
+    
+    // High-Performance Function Calls - Direct function ID access
+    virtual void emit_call_fast(uint16_t func_id) = 0;
+    virtual void emit_goroutine_spawn_fast(uint16_t func_id) = 0;
+    
+    // Ultra-High-Performance Direct Address Calls - Zero overhead
+    virtual void emit_goroutine_spawn_direct(void* function_address) = 0;
     virtual std::vector<uint8_t> get_code() const = 0;
     virtual void clear() = 0;
     virtual size_t get_current_offset() const = 0;
@@ -261,6 +268,18 @@ public:
     void emit_goroutine_spawn_with_address(void* function_address) override;
     void emit_promise_resolve(int value_reg) override;
     void emit_promise_await(int promise_reg) override;
+    
+    // High-Performance Function Calls - Direct function ID access
+    void emit_call_fast(uint16_t func_id) override;
+    void emit_goroutine_spawn_fast(uint16_t func_id) override;
+    
+    // Ultra-High-Performance Direct Address Calls - Zero overhead
+    void emit_goroutine_spawn_direct(void* function_address) override;
+    
+    // Near-Optimal Relative Offset Calls - One LEA instruction overhead
+    void emit_goroutine_spawn_with_offset(size_t function_offset);
+    void emit_calculate_function_address_from_offset(size_t function_offset);
+    
     std::vector<uint8_t> get_code() const override { return code; }
     void clear() override { code.clear(); label_offsets.clear(); unresolved_jumps.clear(); }
     size_t get_current_offset() const override;
@@ -327,6 +346,14 @@ public:
     void emit_goroutine_spawn_with_address(void* function_address) override;
     void emit_promise_resolve(int value_reg) override;
     void emit_promise_await(int promise_reg) override;
+    
+    // High-Performance Function Calls - Direct function ID access
+    void emit_call_fast(uint16_t func_id) override;
+    void emit_goroutine_spawn_fast(uint16_t func_id) override;
+    
+    // Ultra-High-Performance Direct Address Calls - Zero overhead
+    void emit_goroutine_spawn_direct(void* function_address) override;
+    
     std::vector<uint8_t> get_code() const override { return code; }
     void clear() override { code.clear(); label_offsets.clear(); unresolved_jumps.clear(); }
     size_t get_current_offset() const override;

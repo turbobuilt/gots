@@ -1,0 +1,55 @@
+# Makefile for Goroutine Event System
+
+CXX = g++
+CXXFLAGS = -std=c++17 -O2 -Wall -Wextra -pthread
+INCLUDES = -I.
+LIBS = -lpthread
+
+# Source files
+SOURCES = goroutine_event_system.cpp
+HEADERS = goroutine_event_system.h
+TEST_SOURCES = test_goroutine_event_system.cpp
+
+# Object files
+OBJECTS = $(SOURCES:.cpp=.o)
+TEST_OBJECTS = $(TEST_SOURCES:.cpp=.o)
+
+# Executables
+TEST_EXECUTABLE = test_event_system
+
+.PHONY: all clean test
+
+all: $(TEST_EXECUTABLE)
+
+# Build test executable
+$(TEST_EXECUTABLE): $(OBJECTS) $(TEST_OBJECTS)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LIBS)
+
+# Compile source files
+%.o: %.cpp $(HEADERS)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+
+# Run tests
+test: $(TEST_EXECUTABLE)
+	./$(TEST_EXECUTABLE)
+
+# Clean build files
+clean:
+	rm -f $(OBJECTS) $(TEST_OBJECTS) $(TEST_EXECUTABLE)
+
+# Debug build
+debug: CXXFLAGS += -g -DDEBUG
+debug: $(TEST_EXECUTABLE)
+
+# Verbose build
+verbose: CXXFLAGS += -v
+verbose: $(TEST_EXECUTABLE)
+
+# Help
+help:
+	@echo "Available targets:"
+	@echo "  all     - Build all executables"
+	@echo "  test    - Build and run tests"
+	@echo "  debug   - Build with debug symbols"
+	@echo "  clean   - Remove build files"
+	@echo "  help    - Show this help message"

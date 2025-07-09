@@ -18,8 +18,8 @@ namespace gots {
 void __register_function_id(int64_t function_id, const std::string& function_name);
 void ensure_lookup_function_by_id_registered();
 
-// Forward declaration for runtime function lookup
-extern "C" void* __lookup_function(const char* name);
+// Forward declaration for fast runtime function lookup
+extern "C" void* __lookup_function_fast(uint16_t func_id);
 
 // Helper function to get the global deferred functions list
 static std::vector<std::pair<std::string, FunctionExpression*>>& get_deferred_functions() {
@@ -1051,59 +1051,78 @@ void FunctionExpression::generate_code(CodeGenerator& gen, TypeInference& types)
         throw std::runtime_error("Function not properly registered in compilation manager");
     }
     
-    // Get the function address from the compilation manager
+    // ULTRA-FAST SYSTEM: Try direct address first, then relative offset, fallback to function ID
     void* func_address = FunctionCompilationManager::instance().get_function_address(func_name);
-    if (!func_address) {
-        // If address is not available, we're likely in Phase 2 compilation
-        // In this case, emit a function call by name that will be resolved later
-        std::cout << "DEBUG: Function " << func_name << " address not available, emitting call by name" << std::endl;
+    
+    if (func_address) {
+        // OPTIMAL PATH: Direct address call - zero overhead
+        std::cout << "DEBUG: Using DIRECT ADDRESS - " << func_name << " at address: " << func_address << std::endl;
         
         if (is_goroutine) {
-            // For goroutines, emit a call to spawn the function by name
-            std::cout << "DEBUG: FunctionExpression is_goroutine=true, calling emit_goroutine_spawn" << std::endl;
-            gen.emit_goroutine_spawn(func_name);
+            // ULTRA-OPTIMIZED: Direct goroutine spawn with address
+            std::cout << "DEBUG: FunctionExpression is_goroutine=true, calling DIRECT goroutine spawn" << std::endl;
+            if (auto x86_gen = dynamic_cast<X86CodeGen*>(&gen)) {
+                x86_gen->emit_goroutine_spawn_direct(func_address);
+            }
             result_type = DataType::PROMISE;
         } else {
-            // For regular function expressions (callbacks), emit a call to get function address
-            std::cout << "DEBUG: FunctionExpression emitting call to get function address for: " << func_name << std::endl;
-            
-            // Store the function name string in memory for the runtime call
-            static std::unordered_map<std::string, const char*> name_storage;
-            
-            // Check if we already have this name stored
-            auto it = name_storage.find(func_name);
-            const char* name_ptr;
-            if (it != name_storage.end()) {
-                name_ptr = it->second;
-            } else {
-                // Allocate permanent storage for this function name
-                char* permanent_name = new char[func_name.length() + 1];
-                strcpy(permanent_name, func_name.c_str());
-                name_storage[func_name] = permanent_name;
-                name_ptr = permanent_name;
-            }
-            
-            // Pass the function name to the runtime lookup function
-            uint64_t name_addr = reinterpret_cast<uint64_t>(name_ptr);
-            gen.emit_mov_reg_imm(7, static_cast<int64_t>(name_addr)); // RDI = function name
-            gen.emit_call("__lookup_function"); // This function already exists in the runtime
+            // ULTRA-OPTIMIZED: Direct function address return (no lookup needed)
+            std::cout << "DEBUG: FunctionExpression callback using DIRECT ADDRESS" << std::endl;
+            gen.emit_mov_reg_imm(0, reinterpret_cast<int64_t>(func_address)); // RAX = function address
             result_type = DataType::FUNCTION;
         }
-        return;
-    }
-    
-    std::cout << "DEBUG: Function " << func_name << " has address " << func_address << std::endl;
-    
-    if (is_goroutine) {
-        // For goroutines, emit a call to spawn the function
-        std::cout << "DEBUG: FunctionExpression is_goroutine=true, calling emit_goroutine_spawn_with_address" << std::endl;
-        gen.emit_goroutine_spawn_with_address(func_address);
-        result_type = DataType::PROMISE;
     } else {
-        // For regular function expressions (callbacks), return the function address
-        std::cout << "DEBUG: FunctionExpression returning function address for callback" << std::endl;
-        gen.emit_mov_reg_imm(0, reinterpret_cast<int64_t>(func_address)); // RAX = function address
-        result_type = DataType::FUNCTION;
+        // SECOND BEST PATH: Try relative offset calculation (address = base + offset)
+        size_t func_offset = FunctionCompilationManager::instance().get_function_offset(func_name);
+        
+        if (FunctionCompilationManager::instance().is_function_compiled(func_name)) {
+            // NEAR-OPTIMAL PATH: Calculate address at runtime (base + offset)
+            std::cout << "DEBUG: Using RELATIVE OFFSET - " << func_name << " at offset: " << func_offset << std::endl;
+            
+            if (is_goroutine) {
+                // Calculate function address as exec_memory_base + offset
+                std::cout << "DEBUG: FunctionExpression is_goroutine=true, calling relative offset goroutine spawn" << std::endl;
+                if (auto x86_gen = dynamic_cast<X86CodeGen*>(&gen)) {
+                    // Use RIP-relative addressing to calculate function address
+                    // This is still very fast - just one LEA instruction
+                    x86_gen->emit_goroutine_spawn_with_offset(func_offset);
+                }
+                result_type = DataType::PROMISE;
+            } else {
+                // Calculate function address as exec_memory_base + offset  
+                std::cout << "DEBUG: FunctionExpression callback using RELATIVE OFFSET" << std::endl;
+                if (auto x86_gen = dynamic_cast<X86CodeGen*>(&gen)) {
+                    x86_gen->emit_calculate_function_address_from_offset(func_offset);
+                }
+                result_type = DataType::FUNCTION;
+            }
+        } else {
+            // FALLBACK PATH: Use function ID (should rarely happen with proper phase ordering)
+            uint16_t func_id = FunctionCompilationManager::instance().get_function_id(func_name);
+            if (func_id == 0) {
+                std::cerr << "ERROR: Function " << func_name << " not found in either address or ID registry!" << std::endl;
+                throw std::runtime_error("Function not found in fast function registry");
+            }
+        
+        std::cout << "DEBUG: FALLBACK to function ID system - " << func_name << " has ID: " << func_id << std::endl;
+        
+        if (is_goroutine) {
+            // Fallback: Use fast spawn with function ID
+            std::cout << "DEBUG: FunctionExpression is_goroutine=true, calling fast goroutine spawn (fallback)" << std::endl;
+            if (auto x86_gen = dynamic_cast<X86CodeGen*>(&gen)) {
+                x86_gen->emit_goroutine_spawn_fast(func_id);
+            }
+            result_type = DataType::PROMISE;
+        } else {
+            // Fallback: Use fast lookup with function ID
+            std::cout << "DEBUG: FunctionExpression callback using fast lookup for ID (fallback): " << func_id << std::endl;
+            
+            // Load function ID into RDI and call fast lookup
+            gen.emit_mov_reg_imm(7, static_cast<int64_t>(func_id)); // RDI = function ID
+            gen.emit_call("__lookup_function_fast"); // Fast O(1) lookup
+            result_type = DataType::FUNCTION;
+        }
+        }
     }
 }
 
@@ -1294,16 +1313,11 @@ extern "C" const char* __lookup_function_name_by_id(int64_t function_id) {
 
 // Global function to look up function address by ID for JIT calls
 extern "C" void* __lookup_function_by_id(int64_t function_id) {
-    auto& registry = get_function_id_registry();
-    auto it = registry.find(function_id);
-    if (it != registry.end()) {
-        const std::string& func_name = it->second;
-        std::cout << "DEBUG: Looking up function address for ID " << function_id << " (name: " << func_name << ")" << std::endl;
-        
-        // Look up the function address in the runtime registry
-        return __lookup_function(func_name.c_str());
+    // Direct fast lookup using function ID (assumes function_id is valid uint16_t)
+    if (function_id >= 0 && function_id <= 65535) {
+        return __lookup_function_fast(static_cast<uint16_t>(function_id));
     }
-    std::cout << "ERROR: Function ID " << function_id << " not found in registry!" << std::endl;
+    std::cout << "ERROR: Function ID " << function_id << " out of range!" << std::endl;
     return nullptr;
 }
 
@@ -1317,7 +1331,7 @@ void __register_function_id(int64_t function_id, const std::string& function_nam
 static bool __lookup_function_by_id_registered = false;
 void ensure_lookup_function_by_id_registered() {
     if (!__lookup_function_by_id_registered) {
-        __register_function("__lookup_function_by_id", reinterpret_cast<void*>(__lookup_function_by_id));
+        __register_function_fast(reinterpret_cast<void*>(__lookup_function_by_id), 1, 0);
         __lookup_function_by_id_registered = true;
     }
 }

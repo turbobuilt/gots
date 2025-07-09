@@ -160,12 +160,18 @@ std::string FunctionCompilationManager::register_function(std::shared_ptr<Functi
         func_name = generate_unique_function_name(func_name);
     }
     
-    // Create function info
+    // Create function info and assign function ID
     auto func_info = std::make_unique<FunctionInfo>(func_name, func_expr);
+    
+    // Assign fast function ID using the runtime system
+    extern uint16_t __register_function_fast(void* func_ptr, uint16_t arg_count, uint8_t calling_convention);
+    func_info->function_id = __register_function_fast(nullptr, 0, 0);  // Address will be set later
+    uint16_t assigned_id = func_info->function_id;
+    
     functions_[func_name] = std::move(func_info);
     compilation_order_.push_back(func_name);
     
-    std::cout << "DEBUG: Registered function: " << func_name << std::endl;
+    std::cout << "DEBUG: Registered function: " << func_name << " with ID: " << assigned_id << std::endl;
     return func_name;
 }
 
@@ -196,9 +202,19 @@ void FunctionCompilationManager::compile_all_functions(CodeGenerator& gen, TypeI
         
         // Record start position
         size_t start_offset = gen.get_current_offset();
+        std::cout << "DEBUG: Function start offset: " << start_offset << std::endl;
         
         // Compile function body
-        compile_function_body(gen, types, func_info);
+        try {
+            compile_function_body(gen, types, func_info);
+            std::cout << "DEBUG: Function body compilation completed for: " << func_name << std::endl;
+        } catch (const std::exception& e) {
+            std::cerr << "ERROR: Exception during function compilation: " << e.what() << std::endl;
+            throw;
+        } catch (...) {
+            std::cerr << "ERROR: Unknown exception during function compilation" << std::endl;
+            throw;
+        }
         
         // Record end position and size
         size_t end_offset = gen.get_current_offset();
@@ -230,6 +246,14 @@ void FunctionCompilationManager::assign_function_addresses(void* executable_memo
         // Calculate address
         func_info->address = memory_base + func_info->code_offset;
         
+        // Update the fast function table with the actual address
+        extern void* __lookup_function_fast(uint16_t func_id);
+        extern FunctionEntry g_function_table[];
+        if (func_info->function_id > 0) {
+            g_function_table[func_info->function_id].func_ptr = func_info->address;
+            std::cout << "DEBUG: Updated fast function table[" << func_info->function_id << "] = " << func_info->address << std::endl;
+        }
+        
         std::cout << "DEBUG: Function " << func_name << " assigned address " << func_info->address << std::endl;
     }
 }
@@ -243,7 +267,7 @@ void FunctionCompilationManager::register_function_in_runtime() {
         
         if (func_info->is_compiled && func_info->address) {
             // Register in runtime system
-            __register_function(func_name.c_str(), func_info->address);
+            __register_function_fast(func_info->address, 0, 0);
             std::cout << "DEBUG: Registered " << func_name << " at address " << func_info->address << std::endl;
         }
     }
@@ -255,6 +279,22 @@ void* FunctionCompilationManager::get_function_address(const std::string& functi
         return it->second->address;
     }
     return nullptr;
+}
+
+size_t FunctionCompilationManager::get_function_offset(const std::string& function_name) {
+    auto it = functions_.find(function_name);
+    if (it != functions_.end() && it->second->is_compiled) {
+        return it->second->code_offset;
+    }
+    return 0; // Invalid offset
+}
+
+uint16_t FunctionCompilationManager::get_function_id(const std::string& function_name) {
+    auto it = functions_.find(function_name);
+    if (it != functions_.end()) {
+        return it->second->function_id;
+    }
+    return 0;  // Invalid function ID
 }
 
 bool FunctionCompilationManager::is_function_compiled(const std::string& function_name) {
@@ -278,7 +318,7 @@ void FunctionCompilationManager::print_function_registry() const {
     for (const auto& pair : functions_) {
         const FunctionInfo* info = pair.second.get();
         std::cout << "  " << pair.first << " -> " << info->address 
-                  << " (offset: " << info->code_offset << ", size: " << info->code_size 
+                  << " (ID: " << info->function_id << ", offset: " << info->code_offset << ", size: " << info->code_size 
                   << ", compiled: " << info->is_compiled << ")" << std::endl;
     }
 }
@@ -331,8 +371,19 @@ void FunctionCompilationManager::compile_function_body(CodeGenerator& gen, TypeI
     for (size_t i = 0; i < func_expr->body.size(); i++) {
         if (func_expr->body[i]) {
             std::cout << "DEBUG: Generating statement " << i << " in function body" << std::endl;
-            func_expr->body[i]->generate_code(gen, local_types);
-            std::cout << "DEBUG: Statement " << i << " generated successfully" << std::endl;
+            std::cout << "DEBUG: Code size before statement " << i << ": " << gen.get_current_offset() << std::endl;
+            
+            try {
+                func_expr->body[i]->generate_code(gen, local_types);
+                std::cout << "DEBUG: Statement " << i << " generated successfully" << std::endl;
+                std::cout << "DEBUG: Code size after statement " << i << ": " << gen.get_current_offset() << std::endl;
+            } catch (const std::exception& e) {
+                std::cerr << "ERROR: Exception in statement " << i << ": " << e.what() << std::endl;
+                throw;
+            } catch (...) {
+                std::cerr << "ERROR: Unknown exception in statement " << i << std::endl;
+                throw;
+            }
         }
     }
     

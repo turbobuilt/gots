@@ -17,6 +17,8 @@ namespace gots {
 // Forward declarations
 class Goroutine;
 class GoroutineScheduler;
+template<typename T> class Channel;
+class SharedMemoryPool;
 
 // Timer structure using function ADDRESS as ID (not pointer)
 struct Timer {
@@ -130,6 +132,12 @@ public:
     
     // Cleanup when child exits
     void on_child_completed();
+    
+    // Advanced features support
+    void reset_task(std::function<void()> new_task); // For goroutine pooling
+    void* allocate_shared_memory(size_t size); // Allocate from shared pool
+    void share_memory(void* ptr, std::shared_ptr<Goroutine> target); // Share memory with another goroutine
+    void release_shared_memory(void* ptr); // Release shared memory
 };
 
 // Simple scheduler - no complex thread pool

@@ -757,19 +757,33 @@ public:
 extern std::unordered_map<int64_t, std::unique_ptr<ObjectInstance>> object_registry;
 extern std::atomic<int64_t> next_object_id;
 
-// Global function registry for goroutines
-extern std::unordered_map<std::string, void*> gots_function_registry;
+// High-Performance Function Registry System
+// Replaces slow string-based lookups with direct ID-based access
+struct FunctionEntry {
+    void* func_ptr;
+    uint16_t arg_count;
+    uint8_t calling_convention;  // 0=void(), 1=int64_t(int64_t), etc.
+    uint8_t flags;               // Future use
+};
+
+// Direct array access - O(1) lookup instead of O(log n) hash table
+// Maximum 65536 functions should be enough for any reasonable program
+constexpr size_t MAX_FUNCTIONS = 65536;
+extern FunctionEntry g_function_table[MAX_FUNCTIONS];
+extern std::atomic<uint16_t> g_next_function_id;
 
 extern "C" {
-    void* __goroutine_spawn(const char* function_name);
-    void* __goroutine_spawn_with_arg1(const char* function_name, int64_t arg1);
-    void* __goroutine_spawn_with_arg2(const char* function_name, int64_t arg1, int64_t arg2);
-    void* __goroutine_spawn_with_args(const char* function_name, int64_t* args, int64_t arg_count);
-    void* __goroutine_spawn_with_scope(const char* function_name, void* captured_scope);
-    void* __goroutine_spawn_func_ptr(void* func_ptr, void* arg);
-    void* __goroutine_spawn_func_id(int64_t func_id, void* arg);
+    // High-Performance Function Registration - O(1) access
+    uint16_t __register_function_fast(void* func_ptr, uint16_t arg_count, uint8_t calling_convention);
+    void* __lookup_function_fast(uint16_t func_id);
+    
+    // Optimized goroutine spawn with direct function IDs
+    void* __goroutine_spawn_fast(uint16_t func_id);
+    void* __goroutine_spawn_fast_arg1(uint16_t func_id, int64_t arg1);
+    void* __goroutine_spawn_fast_arg2(uint16_t func_id, int64_t arg1, int64_t arg2);
+    
+    // Core system functions
     void __set_goroutine_context(int64_t is_goroutine);
-    void __register_function(const char* name, void* func_ptr);
     void __promise_resolve(void* promise, void* value);
     void* __promise_await(void* promise);
     void __promise_destroy(void* promise);

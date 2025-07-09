@@ -10,8 +10,13 @@ extern "C" int64_t __gots_set_timeout(void* callback, int64_t delay_ms);
 extern "C" int64_t __gots_set_interval(void* callback, int64_t delay_ms);  
 extern "C" bool __gots_clear_timeout(int64_t timer_id);
 extern "C" bool __gots_clear_interval(int64_t timer_id);
-extern "C" void* __lookup_function(const char* name);
+// Legacy function removed - use __lookup_function_fast(func_id) instead
 extern "C" void __runtime_stub_function();
+
+// Forward declarations for gots namespace functions
+namespace gots {
+    extern void* __goroutine_spawn_func_ptr(void* func_ptr, void* arg);
+}
 
 namespace gots {
 
@@ -239,239 +244,91 @@ void X86CodeGen::emit_mod_reg_reg(int dst, int src) {
     emit_mov_reg_reg(dst, RDX);  // Move remainder (RDX) to destination
 }
 
+// High-Performance Runtime Function Address Table
+// Pre-computed at initialization - eliminates runtime string comparisons
+static std::unordered_map<std::string, void*> g_runtime_function_table;
+static bool g_runtime_table_initialized = false;
+
+static void initialize_runtime_function_table() {
+    if (g_runtime_table_initialized) return;
+    
+    // Core functions - essential for basic functionality
+    g_runtime_function_table["__console_log"] = (void*)__console_log;
+    g_runtime_function_table["__console_log_newline"] = (void*)__console_log_newline;
+    g_runtime_function_table["__console_log_space"] = (void*)__console_log_space;
+    g_runtime_function_table["__console_log_string"] = (void*)__console_log;
+    
+    // High-performance goroutine spawn functions
+    g_runtime_function_table["__goroutine_spawn_fast"] = (void*)__goroutine_spawn_fast;
+    g_runtime_function_table["__goroutine_spawn_fast_arg1"] = (void*)__goroutine_spawn_fast_arg1;
+    g_runtime_function_table["__goroutine_spawn_fast_arg2"] = (void*)__goroutine_spawn_fast_arg2;
+    g_runtime_function_table["__goroutine_spawn_func_ptr"] = (void*)__goroutine_spawn_func_ptr;
+    
+    // Function registration - FAST ONLY SYSTEM
+    g_runtime_function_table["__register_function_fast"] = (void*)__register_function_fast;
+    g_runtime_function_table["__lookup_function_fast"] = (void*)__lookup_function_fast;
+    g_runtime_function_table["__set_goroutine_context"] = (void*)__set_goroutine_context;
+    
+    // Timer functions
+    g_runtime_function_table["__gots_set_timeout"] = (void*)__gots_set_timeout;
+    g_runtime_function_table["__gots_set_interval"] = (void*)__gots_set_interval;
+    g_runtime_function_table["__gots_clear_timeout"] = (void*)__gots_clear_timeout;
+    g_runtime_function_table["__gots_clear_interval"] = (void*)__gots_clear_interval;
+    
+    // Utility functions
+    extern void* __string_intern(const char* str);
+    extern void* __get_executable_memory_base();
+    g_runtime_function_table["__array_create"] = (void*)__array_create;
+    g_runtime_function_table["__string_create"] = (void*)__string_create;
+    g_runtime_function_table["__string_intern"] = (void*)__string_intern;
+    g_runtime_function_table["__lookup_function_fast"] = (void*)__lookup_function_fast;
+    g_runtime_function_table["__get_executable_memory_base"] = (void*)__get_executable_memory_base;
+    
+    // Advanced goroutine functions
+    extern void __init_advanced_goroutine_system();
+    extern void* __goroutine_alloc_shared(int64_t size);
+    extern void __goroutine_share_memory(void* ptr, int64_t target_id);
+    extern void __goroutine_release_shared(void* ptr);
+    extern void* __channel_create(int64_t element_size, int64_t capacity);
+    extern bool __channel_send_int64(void* channel_ptr, int64_t value);
+    extern bool __channel_receive_int64(void* channel_ptr, int64_t* value);
+    extern bool __channel_try_receive_int64(void* channel_ptr, int64_t* value);
+    extern void __channel_close(void* channel_ptr);
+    extern void __channel_delete(void* channel_ptr);
+    extern void __print_scheduler_stats();
+    
+    g_runtime_function_table["__init_advanced_goroutine_system"] = (void*)__init_advanced_goroutine_system;
+    g_runtime_function_table["__goroutine_alloc_shared"] = (void*)__goroutine_alloc_shared;
+    g_runtime_function_table["__goroutine_share_memory"] = (void*)__goroutine_share_memory;
+    g_runtime_function_table["__goroutine_release_shared"] = (void*)__goroutine_release_shared;
+    g_runtime_function_table["__channel_create"] = (void*)__channel_create;
+    g_runtime_function_table["__channel_send_int64"] = (void*)__channel_send_int64;
+    g_runtime_function_table["__channel_receive_int64"] = (void*)__channel_receive_int64;
+    g_runtime_function_table["__channel_try_receive_int64"] = (void*)__channel_try_receive_int64;
+    g_runtime_function_table["__channel_close"] = (void*)__channel_close;
+    g_runtime_function_table["__channel_delete"] = (void*)__channel_delete;
+    g_runtime_function_table["__print_scheduler_stats"] = (void*)__print_scheduler_stats;
+    
+    g_runtime_table_initialized = true;
+}
+
 void X86CodeGen::emit_call(const std::string& label) {
     // Check if this is a runtime function call
     if (label.substr(0, 2) == "__") {
-        // For runtime functions, use absolute call via register
-        // Move function address to RAX and call it
+        // Initialize function table on first use
+        initialize_runtime_function_table();
+        
+        // Fast O(1) lookup instead of long if-else chain
+        auto it = g_runtime_function_table.find(label);
         void* func_addr = nullptr;
         
-        // Core functions we need working
-        if (label == "__console_log") {
-            func_addr = (void*)__console_log;
-        } else if (label == "__console_log_newline") {
-            func_addr = (void*)__console_log_newline;
-        } else if (label == "__console_log_space") {
-            func_addr = (void*)__console_log_space;
-        } else if (label == "__goroutine_spawn") {
-            func_addr = (void*)__goroutine_spawn;
-            std::cout << "DEBUG: Hardcoded __goroutine_spawn address: " << func_addr << std::endl;
-        } else if (label == "__goroutine_spawn_with_arg1") {
-            func_addr = (void*)__goroutine_spawn_with_arg1;
-        } else if (label == "__goroutine_spawn_with_arg2") {
-            func_addr = (void*)__goroutine_spawn_with_arg2;
-        } else if (label == "__goroutine_spawn_with_scope") {
-            func_addr = (void*)__goroutine_spawn_with_scope;
-        } else if (label == "__set_goroutine_context") {
-            func_addr = (void*)__set_goroutine_context;
-        } else if (label == "__goroutine_spawn_func_ptr") {
-            func_addr = (void*)__goroutine_spawn_func_ptr;
-        } else if (label == "__goroutine_spawn_func_id") {
-            func_addr = (void*)__goroutine_spawn_func_id;
-        } else if (label == "__array_create") {
-            func_addr = (void*)__array_create;
-        
-        // Timer functions - the ones we're actually working on
-        } else if (label == "__gots_set_timeout") {
-            func_addr = (void*)__gots_set_timeout;
-        } else if (label == "__gots_set_interval") {
-            func_addr = (void*)__gots_set_interval;
-        } else if (label == "__gots_clear_timeout") {
-            func_addr = (void*)__gots_clear_timeout;
-        } else if (label == "__gots_clear_interval") {
-            func_addr = (void*)__gots_clear_interval;
-        } else if (label == "__lookup_function") {
-            func_addr = (void*)__lookup_function;
-        
-        // Console functions - essential for basic functionality
-        } else if (label == "__console_log") {
-            func_addr = (void*)__console_log;
-        } else if (label == "__console_log_string") {
-            func_addr = (void*)__console_log; // Map to existing function
-        } else if (label == "__console_log_newline") {
-            func_addr = (void*)__console_log_newline;
-        } else if (label == "__console_log_space") {
-            func_addr = (void*)__console_log_space;
-        } else if (label == "__string_intern") {
-            func_addr = (void*)__string_create; // Map to existing function
-        
-        // Everything else - commented out for now
-        /*
-        } else if (label == "__console_log_array") {
-            func_addr = (void*)__console_log_array;
-        } else if (label == "__console_log_number") {
-            func_addr = (void*)__console_log_number;
-        } else if (label == "__console_log_auto") {
-            func_addr = (void*)__console_log_auto;
-        } else if (label == "__console_log_string") {
-            func_addr = (void*)__console_log_string;
-        } else if (label == "__console_log_object") {
-            func_addr = (void*)__console_log_object;
-        } else if (label == "__static_stringify") {
-            func_addr = (void*)__static_stringify;
-        } else if (label == "__console_time") {
-            func_addr = (void*)__console_time;
-        } else if (label == "__console_timeEnd") {
-            func_addr = (void*)__console_timeEnd;
-        } else if (label == "__promise_all") {
-            func_addr = (void*)__promise_all;
-        } else if (label == "__array_push") {
-            func_addr = (void*)__array_push;
-        } else if (label == "__array_pop") {
-            func_addr = (void*)__array_pop;
-        } else if (label == "__array_size") {
-            func_addr = (void*)__array_size;
-        } else if (label == "__array_access") {
-            func_addr = (void*)__array_access;
-        } else if (label == "__array_data") {
-            func_addr = (void*)__array_data;
-        } else if (label == "__string_match") {
-            func_addr = (void*)__string_match;
-        } else if (label == "__string_replace") {
-            func_addr = (void*)__string_replace;
-        } else if (label == "__string_search") {
-            func_addr = (void*)__string_search;
-        } else if (label == "__match_result_get_index") {
-            func_addr = (void*)__match_result_get_index;
-        } else if (label == "__match_result_get_input") {
-            func_addr = (void*)__match_result_get_input;
-        } else if (label == "__match_result_get_groups") {
-            func_addr = (void*)__match_result_get_groups;
-        } else if (label == "__promise_await") {
-            func_addr = (void*)__promise_await;
-        } else if (label == "__promise_resolve") {
-            func_addr = (void*)__promise_resolve;
-        */
+        if (it != g_runtime_function_table.end()) {
+            func_addr = it->second;
         } else {
             // Default case - return a no-op function for unimplemented runtime functions
             std::cout << "DEBUG: Unimplemented runtime function: " << label << std::endl;
             func_addr = (void*)__runtime_stub_function;
         }
-        /*
-        // All other functions commented out - will be stubbed
-        } else if (label == "__typed_array_create_int64") {
-            func_addr = (void*)__typed_array_create_int64;
-        } else if (label == "__typed_array_create_float32") {
-            func_addr = (void*)__typed_array_create_float32;
-        } else if (label == "__typed_array_create_float64") {
-            func_addr = (void*)__typed_array_create_float64;
-        } else if (label == "__typed_array_create_uint8") {
-            func_addr = (void*)__typed_array_create_uint8;
-        } else if (label == "__typed_array_create_uint16") {
-            func_addr = (void*)__typed_array_create_uint16;
-        } else if (label == "__typed_array_create_uint32") {
-            func_addr = (void*)__typed_array_create_uint32;
-        } else if (label == "__typed_array_create_uint64") {
-            func_addr = (void*)__typed_array_create_uint64;
-        // Typed array push functions
-        } else if (label == "__typed_array_push_int32") {
-            func_addr = (void*)__typed_array_push_int32;
-        } else if (label == "__typed_array_push_int64") {
-            func_addr = (void*)__typed_array_push_int64;
-        } else if (label == "__typed_array_push_float32") {
-            func_addr = (void*)__typed_array_push_float32;
-        } else if (label == "__typed_array_push_float64") {
-            func_addr = (void*)__typed_array_push_float64;
-        } else if (label == "__typed_array_push_uint8") {
-            func_addr = (void*)__typed_array_push_uint8;
-        } else if (label == "__typed_array_push_uint16") {
-            func_addr = (void*)__typed_array_push_uint16;
-        } else if (label == "__typed_array_push_uint32") {
-            func_addr = (void*)__typed_array_push_uint32;
-        } else if (label == "__typed_array_push_uint64") {
-            func_addr = (void*)__typed_array_push_uint64;
-        // Typed array console logging
-        } else if (label == "__console_log_typed_array_int32") {
-            func_addr = (void*)__console_log_typed_array_int32;
-        } else if (label == "__console_log_typed_array_int64") {
-            func_addr = (void*)__console_log_typed_array_int64;
-        } else if (label == "__console_log_typed_array_float32") {
-            func_addr = (void*)__console_log_typed_array_float32;
-        } else if (label == "__console_log_typed_array_float64") {
-            func_addr = (void*)__console_log_typed_array_float64;
-        } else if (label == "__register_function") {
-            func_addr = (void*)__register_function;
-        } else if (label == "__object_create") {
-            func_addr = (void*)__object_create;
-        } else if (label == "__object_set_property") {
-            func_addr = (void*)__object_set_property;
-        } else if (label == "__object_set_property_name") {
-            func_addr = (void*)__object_set_property_name;
-        } else if (label == "__object_get_property") {
-            func_addr = (void*)__object_get_property;
-        } else if (label == "__object_get_property_name") {
-            func_addr = (void*)__object_get_property_name;
-        } else if (label == "__object_call_method") {
-            func_addr = (void*)__object_call_method;
-        } else if (label == "__object_destroy") {
-            func_addr = (void*)__object_destroy;
-        } else if (label == "__static_set_property") {
-            func_addr = (void*)__static_set_property;
-        } else if (label == "__static_get_property") {
-            func_addr = (void*)__static_get_property;
-        } else if (label == "__register_class_inheritance") {
-            func_addr = (void*)__register_class_inheritance;
-        } else if (label == "__super_constructor_call") {
-            func_addr = (void*)__super_constructor_call;
-        } else if (label == "__runtime_pow") {
-            func_addr = (void*)__runtime_pow;
-        } else if (label == "__runtime_js_equal") {
-            func_addr = (void*)__runtime_js_equal;
-        // High-Performance String Runtime Functions - Future-Proof Implementation
-        } else if (label == "__string_create") {
-            func_addr = (void*)__string_create;
-        } else if (label == "__string_create_empty") {
-            func_addr = (void*)__string_create_empty;
-        } else if (label == "__string_destroy") {
-            func_addr = (void*)__string_destroy;
-        } else if (label == "__string_concat") {
-            func_addr = (void*)__string_concat;
-        } else if (label == "__string_concat_cstr") {
-            func_addr = (void*)__string_concat_cstr;
-        } else if (label == "__string_concat_cstr_left") {
-            func_addr = (void*)__string_concat_cstr_left;
-        } else if (label == "__string_equals") {
-            func_addr = (void*)__string_equals;
-        } else if (label == "__string_equals_cstr") {
-            func_addr = (void*)__string_equals_cstr;
-        } else if (label == "__string_compare") {
-            func_addr = (void*)__string_compare;
-        } else if (label == "__string_length") {
-            func_addr = (void*)__string_length;
-        } else if (label == "__string_c_str") {
-            func_addr = (void*)__string_c_str;
-        } else if (label == "__string_char_at") {
-            func_addr = (void*)__string_char_at;
-        } else if (label == "__string_intern") {
-            func_addr = (void*)__string_intern;
-        } else if (label == "__string_pool_cleanup") {
-            func_addr = (void*)__string_pool_cleanup;
-        } else if (label == "__regex_create_by_id") {
-            func_addr = (void*)__regex_create_by_id;
-        } else if (label == "__regex_test") {
-            func_addr = (void*)__regex_test;
-        } else if (label == "__regex_exec") {
-            func_addr = (void*)__regex_exec;
-        } else if (label == "__regex_match_all") {
-            func_addr = (void*)__regex_match_all;
-        } else if (label == "__regex_get_source") {
-            func_addr = (void*)__regex_get_source;
-        } else if (label == "__regex_get_global") {
-            func_addr = (void*)__regex_get_global;
-        } else if (label == "__regex_get_ignore_case") {
-            func_addr = (void*)__regex_get_ignore_case;
-        } else if (label == "__regex_create") {
-            func_addr = (void*)__regex_create;
-        } else if (label == "__regex_create_simple") {
-            func_addr = (void*)__regex_create_simple;
-        } else if (label == "__regex_destroy") {
-            func_addr = (void*)__regex_destroy;
-        } else if (label == "__register_regex_pattern") {
-            func_addr = (void*)__register_regex_pattern;
-        } else if (label == "__debug_print_pointer") {
-            func_addr = (void*)__debug_print_pointer;
-        }
-        */
         
         if (func_addr) {
             std::cout << "DEBUG: About to generate call to " << label << " at address " << func_addr << std::endl;
@@ -486,26 +343,6 @@ void X86CodeGen::emit_call(const std::string& label) {
             code.push_back(0xFF);
             code.push_back(0xD0);
             std::cout << "DEBUG: Generated call instruction for " << label << std::endl;
-            return;
-        }
-        
-        // If not found in hardcoded list, check the dynamic function registry
-        extern std::unordered_map<std::string, void*> gots_function_registry;
-        auto it = gots_function_registry.find(label);
-        if (it != gots_function_registry.end()) {
-            func_addr = it->second;
-            std::cout << "DEBUG: emit_call found " << label << " in registry at address " << func_addr << std::endl;
-            
-            // mov rax, immediate64
-            code.push_back(0x48);
-            code.push_back(0xB8);
-            uint64_t addr = reinterpret_cast<uint64_t>(func_addr);
-            for (int i = 0; i < 8; i++) {
-                code.push_back((addr >> (i * 8)) & 0xFF);
-            }
-            // call rax
-            code.push_back(0xFF);
-            code.push_back(0xD0);
             return;
         }
     }
@@ -705,63 +542,8 @@ void X86CodeGen::emit_label(const std::string& label) {
 }
 
 void X86CodeGen::resolve_runtime_function_calls() {
-    // Resolve any unresolved runtime function calls now that the registry is populated
-    extern std::unordered_map<std::string, void*> gots_function_registry;
-    
-    std::cout << "DEBUG: Resolving " << unresolved_jumps.size() << " unresolved function calls" << std::endl;
-    
-    auto it = unresolved_jumps.begin();
-    while (it != unresolved_jumps.end()) {
-        const std::string& label = it->first;
-        int64_t call_offset = it->second;
-        
-        // Check if this is a runtime function that's now registered
-        if (label.substr(0, 2) == "__") {
-            auto registry_it = gots_function_registry.find(label);
-            if (registry_it != gots_function_registry.end()) {
-                void* func_addr = registry_it->second;
-                std::cout << "DEBUG: Resolving runtime function " << label << " to address " << func_addr << std::endl;
-                
-                // Patch the call instruction to use an absolute call via register
-                // We need to replace the relative call (E8 XX XX XX XX) with:
-                // mov rax, immediate64 (48 B8 XX XX XX XX XX XX XX XX)
-                // call rax (FF D0)
-                
-                // First, we need more space. The original call is 5 bytes, we need 12 bytes.
-                // For now, let's use a simpler approach and just patch the relative offset
-                // to point to a stub we'll create at the end of the code.
-                
-                // Calculate where to put the stub (at the end of current code)
-                int64_t stub_offset = code.size();
-                
-                // Create stub: mov rax, address; call rax; ret (to return to caller)
-                code.push_back(0x48); code.push_back(0xB8);  // mov rax, imm64
-                uint64_t addr = reinterpret_cast<uint64_t>(func_addr);
-                for (int i = 0; i < 8; i++) {
-                    code.push_back((addr >> (i * 8)) & 0xFF);
-                }
-                code.push_back(0xFF); code.push_back(0xD0);  // call rax
-                
-                // Calculate relative offset from call site to stub
-                int32_t relative_offset = stub_offset - (call_offset + 4);
-                
-                // Patch the original call instruction's offset
-                code[call_offset] = relative_offset & 0xFF;
-                code[call_offset + 1] = (relative_offset >> 8) & 0xFF;
-                code[call_offset + 2] = (relative_offset >> 16) & 0xFF;
-                code[call_offset + 3] = (relative_offset >> 24) & 0xFF;
-                
-                std::cout << "DEBUG: Patched call at offset " << call_offset << " to jump to stub at " << stub_offset << std::endl;
-                
-                // Remove this resolved jump
-                it = unresolved_jumps.erase(it);
-                continue;
-            }
-        }
-        ++it;
-    }
-    
-    std::cout << "DEBUG: " << unresolved_jumps.size() << " unresolved function calls remaining" << std::endl;
+    // Legacy function resolution disabled - using fast function table system
+    std::cout << "DEBUG: Legacy function resolution disabled (using fast function table)" << std::endl;
 }
 
 void X86CodeGen::emit_goroutine_spawn(const std::string& function_name) {
@@ -1117,6 +899,132 @@ void X86CodeGen::emit_jump_if_less(const std::string& label) {
 
 size_t X86CodeGen::get_current_offset() const {
     return code.size();
+}
+
+// High-Performance Function Calls - Direct function ID access
+void X86CodeGen::emit_call_fast(uint16_t func_id) {
+    // Ultra-fast function call using pre-computed function table
+    // This eliminates ALL string lookups and hash table access
+    
+    // Validate function ID
+    if (func_id == 0 || func_id >= MAX_FUNCTIONS) {
+        std::cerr << "ERROR: Invalid function ID in emit_call_fast: " << func_id << std::endl;
+        return;
+    }
+    
+    // Load function pointer directly from g_function_table[func_id]
+    // This generates direct assembly access to the function table
+    
+    // Get the address of g_function_table
+    extern FunctionEntry g_function_table[];
+    uint64_t table_addr = reinterpret_cast<uint64_t>(g_function_table);
+    uint64_t func_entry_addr = table_addr + (func_id * sizeof(FunctionEntry));
+    
+    // mov rax, func_entry_addr  ; Load address of function entry
+    code.push_back(0x48);  // REX.W prefix
+    code.push_back(0xB8);  // MOV rax, imm64
+    for (int i = 0; i < 8; i++) {
+        code.push_back((func_entry_addr >> (i * 8)) & 0xFF);
+    }
+    
+    // mov rax, [rax]  ; Dereference to get actual function pointer
+    code.push_back(0x48);  // REX.W prefix
+    code.push_back(0x8B);  // MOV reg, r/m
+    code.push_back(0x00);  // ModR/M: [rax]
+    
+    // call rax
+    code.push_back(0xFF);
+    code.push_back(0xD0);
+}
+
+void X86CodeGen::emit_goroutine_spawn_fast(uint16_t func_id) {
+    // Optimized goroutine spawn using direct function ID
+    // No string lookups, no hash table access
+    
+    // mov rdi, func_id  ; First argument: function ID
+    emit_mov_reg_imm(RDI, func_id);
+    
+    // Call the optimized spawn function
+    emit_call("__goroutine_spawn_fast");
+}
+
+void X86CodeGen::emit_goroutine_spawn_direct(void* function_address) {
+    // ULTRA-OPTIMIZED: Direct goroutine spawn with zero function call overhead
+    // This is the fastest possible goroutine spawn - no ABI overhead, no lookups
+    
+    std::cout << "DEBUG: emit_goroutine_spawn_direct called with address: " << function_address << std::endl;
+    
+    // Load function address directly into RDI register for the spawn function
+    emit_mov_reg_imm(RDI, reinterpret_cast<int64_t>(function_address));
+    
+    // Call the direct spawn function that expects a function address
+    emit_call("__goroutine_spawn_func_ptr");
+}
+
+void X86CodeGen::emit_goroutine_spawn_with_offset(size_t function_offset) {
+    // NEAR-OPTIMAL: Calculate function address as executable_memory_base + offset
+    // This adds one LEA instruction but is still very fast
+    
+    std::cout << "DEBUG: emit_goroutine_spawn_with_offset called with offset: " << function_offset << std::endl;
+    
+    // Get executable memory base address (stored globally)
+    emit_call("__get_executable_memory_base"); // Result in RAX
+    
+    // Add offset to base address: LEA RDI, [RAX + offset]
+    if (function_offset <= 0x7FFFFFFF) {
+        // Use 32-bit displacement for smaller offset
+        code.push_back(0x48); // REX prefix for 64-bit
+        code.push_back(0x8D); // LEA opcode
+        code.push_back(0xB8); // ModR/M: RDI = [RAX + disp32]
+        
+        // Emit 32-bit offset
+        code.push_back(function_offset & 0xFF);
+        code.push_back((function_offset >> 8) & 0xFF);
+        code.push_back((function_offset >> 16) & 0xFF);
+        code.push_back((function_offset >> 24) & 0xFF);
+    } else {
+        // For larger offsets, use two instructions
+        emit_mov_reg_imm(RDI, static_cast<int64_t>(function_offset));
+        // ADD RDI, RAX
+        code.push_back(0x48); // REX prefix
+        code.push_back(0x01); // ADD opcode
+        code.push_back(0xC7); // ModR/M: RDI += RAX
+    }
+    
+    // Call the direct spawn function that expects a function address
+    emit_call("__goroutine_spawn_func_ptr");
+}
+
+void X86CodeGen::emit_calculate_function_address_from_offset(size_t function_offset) {
+    // NEAR-OPTIMAL: Calculate function address for non-goroutine callbacks
+    
+    std::cout << "DEBUG: emit_calculate_function_address_from_offset called with offset: " << function_offset << std::endl;
+    
+    // Get executable memory base address
+    emit_call("__get_executable_memory_base"); // Result in RAX
+    
+    // Add offset to get final function address in RAX
+    if (function_offset <= 0x7FFFFFFF) {
+        // Use 32-bit displacement: LEA RAX, [RAX + offset]
+        code.push_back(0x48); // REX prefix for 64-bit
+        code.push_back(0x8D); // LEA opcode
+        code.push_back(0x80); // ModR/M: RAX = [RAX + disp32]
+        
+        // Emit 32-bit offset
+        code.push_back(function_offset & 0xFF);
+        code.push_back((function_offset >> 8) & 0xFF);
+        code.push_back((function_offset >> 16) & 0xFF);
+        code.push_back((function_offset >> 24) & 0xFF);
+    } else {
+        // For larger offsets, use immediate load and add
+        emit_mov_reg_imm(RDI, static_cast<int64_t>(function_offset));
+        // ADD RAX, RDI
+        code.push_back(0x48); // REX prefix
+        code.push_back(0x01); // ADD opcode
+        code.push_back(0xF8); // ModR/M: RAX += RDI
+    }
+    
+    // Result is now in RAX (the function address)
 }
 
 }

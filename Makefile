@@ -3,7 +3,7 @@ CXXFLAGS = -std=c++17 -O0 -Wall -Wextra -pthread
 LDFLAGS = -pthread
 
 SRCDIR = .
-SOURCES = compiler.cpp lexer.cpp parser.cpp type_inference.cpp x86_codegen.cpp wasm_codegen.cpp ast_codegen.cpp compilation_context.cpp runtime.cpp runtime_syscalls.cpp lexical_scope.cpp regex.cpp error_reporter.cpp syntax_highlighter.cpp simple_main.cpp goroutine_system.cpp function_compilation_manager.cpp
+SOURCES = compiler.cpp lexer.cpp parser.cpp type_inference.cpp x86_codegen.cpp wasm_codegen.cpp ast_codegen.cpp compilation_context.cpp runtime.cpp runtime_syscalls.cpp lexical_scope.cpp regex.cpp error_reporter.cpp syntax_highlighter.cpp simple_main.cpp goroutine_system.cpp function_compilation_manager.cpp goroutine_advanced.cpp runtime_goroutine_advanced.cpp
 OBJECTS = $(SOURCES:.cpp=.o)
 TARGET = gots
 

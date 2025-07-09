@@ -1,4 +1,5 @@
 #include "goroutine_system.h"
+#include "goroutine_advanced.h"
 #include <iostream>
 #include <algorithm>
 
@@ -26,10 +27,19 @@ Goroutine::Goroutine(int64_t id, std::function<void()> task, std::shared_ptr<Gor
 }
 
 Goroutine::~Goroutine() {
-    signal_exit();
+    // Signal exit and ensure clean shutdown
+    should_exit_.store(true);
+    
+    // Wake up event loop without holding any locks
+    event_loop_cv_.notify_all();
+    
+    // Give the thread time to exit the event loop cleanly
     if (thread_.joinable()) {
         thread_.join();
     }
+    
+    // Now safely unregister from scheduler after thread has completely finished
+    GoroutineScheduler::instance().unregister_goroutine(id_);
 }
 
 void Goroutine::start() {
@@ -91,8 +101,8 @@ void Goroutine::run() {
         GoroutineScheduler::instance().signal_main_goroutine_completion();
     }
     
-    // Unregister from scheduler
-    GoroutineScheduler::instance().unregister_goroutine(id_);
+    // NOTE: unregister_goroutine() is now called in destructor after thread_.join()
+    // to prevent deadlock
 }
 
 // Node.js-style event loop - handles ALL async operations
@@ -141,36 +151,46 @@ void Goroutine::run_event_loop() {
         
         auto now = std::chrono::steady_clock::now();
         
-        // Check for ready timers
+        // Check for ready timers and collect them
+        std::vector<Timer> ready_timers;
         while (!timer_queue_.empty() && timer_queue_.top().execute_time <= now) {
             Timer timer = timer_queue_.top();
             timer_queue_.pop();
-            
+            ready_timers.push_back(timer);
+        }
+        
+        // Execute timers outside the lock to prevent deadlock
+        if (!ready_timers.empty()) {
             lock.unlock();
             
-            std::cout << "DEBUG: Executing timer " << timer.id << std::endl;
-
-            // Reschedule if interval timer
-            if (timer.is_interval) {
-                timer.execute_time = now + std::chrono::milliseconds(timer.interval_ms);
-                timer_queue_.push(timer);
-                std::cout << "DEBUG: Rescheduled interval timer " << timer.id << std::endl;
-            }
-            
-            try {
-                std::cout << "DEBUG: About to execute timer callback for timer " << timer.id << std::endl;
-                typedef void (*TimerCallback)();
-                TimerCallback callback = reinterpret_cast<TimerCallback>(timer.function_address);
-                callback();
-                std::cout << "DEBUG: Timer " << timer.id << " completed" << std::endl;
-            } catch (const std::exception& e) {
-                std::cerr << "ERROR: Timer " << timer.id << " exception: " << e.what() << std::endl;
-            } catch (...) {
-                std::cerr << "ERROR: Timer " << timer.id << " unknown exception" << std::endl;
+            for (const auto& timer : ready_timers) {
+                std::cout << "DEBUG: Executing timer " << timer.id << std::endl;
+                
+                // Reschedule if interval timer (reacquire lock briefly)
+                if (timer.is_interval) {
+                    {
+                        std::lock_guard<std::mutex> relock(event_loop_mutex_);
+                        Timer rescheduled_timer = timer;
+                        rescheduled_timer.execute_time = now + std::chrono::milliseconds(timer.interval_ms);
+                        timer_queue_.push(rescheduled_timer);
+                        std::cout << "DEBUG: Rescheduled interval timer " << timer.id << std::endl;
+                    }
+                }
+                
+                try {
+                    std::cout << "DEBUG: About to execute timer callback for timer " << timer.id << std::endl;
+                    typedef void (*TimerCallback)();
+                    TimerCallback callback = reinterpret_cast<TimerCallback>(timer.function_address);
+                    callback();
+                    std::cout << "DEBUG: Timer " << timer.id << " completed" << std::endl;
+                } catch (const std::exception& e) {
+                    std::cerr << "ERROR: Timer " << timer.id << " exception: " << e.what() << std::endl;
+                } catch (...) {
+                    std::cerr << "ERROR: Timer " << timer.id << " unknown exception" << std::endl;
+                }
             }
             
             lock.lock();
-            
             now = std::chrono::steady_clock::now();
         }
         
@@ -281,6 +301,41 @@ void Goroutine::on_child_completed() {
     // Notify parent that we're done
     if (auto parent = parent_.lock()) {
         parent->decrement_child_count();
+    }
+}
+
+// Advanced features implementation
+void Goroutine::reset_task(std::function<void()> new_task) {
+    // Can only reset if not currently running
+    if (state_ != GoroutineState::RUNNING) {
+        task_ = std::move(new_task);
+        state_ = GoroutineState::CREATED;
+        should_exit_.store(false);
+        std::cout << "DEBUG: Goroutine " << id_ << " task reset for reuse" << std::endl;
+    } else {
+        std::cerr << "ERROR: Cannot reset task of running goroutine" << std::endl;
+    }
+}
+
+void* Goroutine::allocate_shared_memory(size_t size) {
+    void* ptr = g_shared_memory_pool.allocate(size);
+    std::cout << "DEBUG: Goroutine " << id_ << " allocated " << size 
+              << " bytes of shared memory at " << ptr << std::endl;
+    return ptr;
+}
+
+void Goroutine::share_memory(void* ptr, std::shared_ptr<Goroutine> target) {
+    if (ptr && target) {
+        g_shared_memory_pool.add_ref(ptr);
+        std::cout << "DEBUG: Goroutine " << id_ << " shared memory at " << ptr 
+                  << " with goroutine " << target->get_id() << std::endl;
+    }
+}
+
+void Goroutine::release_shared_memory(void* ptr) {
+    if (ptr) {
+        g_shared_memory_pool.release(ptr);
+        std::cout << "DEBUG: Goroutine " << id_ << " released shared memory at " << ptr << std::endl;
     }
 }
 

@@ -385,4 +385,34 @@ size_t WasmCodeGen::get_current_offset() const {
     return code.size();
 }
 
+// High-Performance Function Calls - Direct function ID access
+void WasmCodeGen::emit_call_fast(uint16_t func_id) {
+    // WebAssembly optimized function call using function ID
+    // This uses direct function table indexing for maximum performance
+    emit_opcode(WASM_CALL);
+    emit_leb128(func_id);
+}
+
+void WasmCodeGen::emit_goroutine_spawn_fast(uint16_t func_id) {
+    // WebAssembly optimized goroutine spawn using function ID
+    // Push function ID as argument
+    emit_opcode(WASM_I32_CONST);
+    emit_leb128(func_id);
+    
+    // Call the optimized spawn function
+    emit_call("__goroutine_spawn_fast");
+}
+
+void WasmCodeGen::emit_goroutine_spawn_direct(void* function_address) {
+    // WebAssembly direct address spawn (limited by WASM's security model)
+    // In WebAssembly, we can't use raw pointers, so fall back to func_ptr method
+    
+    // Push function address as argument
+    emit_opcode(WASM_I64_CONST);
+    emit_leb128(reinterpret_cast<int64_t>(function_address));
+    
+    // Call the direct spawn function
+    emit_call("__goroutine_spawn_func_ptr");
+}
+
 }

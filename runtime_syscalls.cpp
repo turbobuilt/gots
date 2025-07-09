@@ -1829,84 +1829,63 @@ void __runtime_register_global() {
     initialize_runtime_object();
     
     // Register all runtime syscall functions in the JIT function registry
-    extern void __register_function(const char* name, void* func_ptr);
+    extern uint16_t __register_function_fast(void* func_ptr, uint16_t arg_count, uint8_t calling_convention);
     
     // Time functions
-    __register_function("__runtime_time_now_millis", reinterpret_cast<void*>(__runtime_time_now_millis));
-    __register_function("__runtime_time_now_nanos", reinterpret_cast<void*>(__runtime_time_now_nanos));
-    __register_function("__runtime_time_timezone_offset", reinterpret_cast<void*>(__runtime_time_timezone_offset));
-    __register_function("__runtime_time_sleep_millis", reinterpret_cast<void*>(__runtime_time_sleep_millis));
+    __register_function_fast(reinterpret_cast<void*>(__runtime_time_now_millis), 0, 0);
+    __register_function_fast(reinterpret_cast<void*>(__runtime_time_now_nanos), 0, 0);
+    __register_function_fast(reinterpret_cast<void*>(__runtime_time_timezone_offset), 0, 0);
+    __register_function_fast(reinterpret_cast<void*>(__runtime_time_sleep_millis), 1, 0);
     
     // Process functions
-    __register_function("__runtime_process_pid", reinterpret_cast<void*>(__runtime_process_pid));
-    __register_function("__runtime_process_cwd", reinterpret_cast<void*>(__runtime_process_cwd));
-    __register_function("__runtime_process_platform", reinterpret_cast<void*>(__runtime_process_platform));
-    __register_function("__runtime_process_arch", reinterpret_cast<void*>(__runtime_process_arch));
+    __register_function_fast(reinterpret_cast<void*>(__runtime_process_pid), 0, 0);
+    __register_function_fast(reinterpret_cast<void*>(__runtime_process_cwd), 0, 0);
+    __register_function_fast(reinterpret_cast<void*>(__runtime_process_platform), 0, 0);
+    __register_function_fast(reinterpret_cast<void*>(__runtime_process_arch), 0, 0);
     
     // File system functions
-    __register_function("__runtime_fs_open", reinterpret_cast<void*>(__runtime_fs_open));
-    __register_function("__runtime_fs_close", reinterpret_cast<void*>(__runtime_fs_close));
-    __register_function("__runtime_fs_exists", reinterpret_cast<void*>(__runtime_fs_exists));
-    __register_function("__runtime_fs_readdir", reinterpret_cast<void*>(__runtime_fs_readdir));
+    __register_function_fast(reinterpret_cast<void*>(__runtime_fs_open), 2, 0);
+    __register_function_fast(reinterpret_cast<void*>(__runtime_fs_close), 1, 0);
+    __register_function_fast(reinterpret_cast<void*>(__runtime_fs_exists), 1, 0);
+    __register_function_fast(reinterpret_cast<void*>(__runtime_fs_readdir), 1, 0);
     
     // Network functions
-    __register_function("__runtime_net_socket", reinterpret_cast<void*>(__runtime_net_socket));
-    __register_function("__runtime_net_bind", reinterpret_cast<void*>(__runtime_net_bind));
-    __register_function("__runtime_net_listen", reinterpret_cast<void*>(__runtime_net_listen));
-    __register_function("__runtime_dns_lookup", reinterpret_cast<void*>(__runtime_dns_lookup));
+    __register_function_fast(reinterpret_cast<void*>(__runtime_net_socket), 3, 0);
+    __register_function_fast(reinterpret_cast<void*>(__runtime_net_bind), 3, 0);
+    __register_function_fast(reinterpret_cast<void*>(__runtime_net_listen), 2, 0);
+    __register_function_fast(reinterpret_cast<void*>(__runtime_dns_lookup), 1, 0);
     
     // Buffer functions
-    __register_function("__runtime_buffer_alloc", reinterpret_cast<void*>(__runtime_buffer_alloc));
-    __register_function("__runtime_buffer_from_string", reinterpret_cast<void*>(__runtime_buffer_from_string));
-    __register_function("__runtime_buffer_to_string", reinterpret_cast<void*>(__runtime_buffer_to_string));
+    __register_function_fast(reinterpret_cast<void*>(__runtime_buffer_alloc), 1, 0);
+    __register_function_fast(reinterpret_cast<void*>(__runtime_buffer_from_string), 1, 0);
+    __register_function_fast(reinterpret_cast<void*>(__runtime_buffer_to_string), 1, 0);
     
     // Path functions
-    __register_function("__runtime_path_basename", reinterpret_cast<void*>(__runtime_path_basename));
-    __register_function("__runtime_path_dirname", reinterpret_cast<void*>(__runtime_path_dirname));
-    __register_function("__runtime_path_extname", reinterpret_cast<void*>(__runtime_path_extname));
-    __register_function("__runtime_path_normalize", reinterpret_cast<void*>(__runtime_path_normalize));
+    __register_function_fast(reinterpret_cast<void*>(__runtime_path_basename), 1, 0);
+    __register_function_fast(reinterpret_cast<void*>(__runtime_path_dirname), 1, 0);
+    __register_function_fast(reinterpret_cast<void*>(__runtime_path_extname), 1, 0);
+    __register_function_fast(reinterpret_cast<void*>(__runtime_path_normalize), 1, 0);
     
     // OS functions
-    __register_function("__runtime_os_hostname", reinterpret_cast<void*>(__runtime_os_hostname));
-    __register_function("__runtime_os_type", reinterpret_cast<void*>(__runtime_os_type));
-    __register_function("__runtime_os_uptime", reinterpret_cast<void*>(__runtime_os_uptime));
-    __register_function("__runtime_os_freemem", reinterpret_cast<void*>(__runtime_os_freemem));
+    __register_function_fast(reinterpret_cast<void*>(__runtime_os_hostname), 0, 0);
+    __register_function_fast(reinterpret_cast<void*>(__runtime_os_type), 0, 0);
+    __register_function_fast(reinterpret_cast<void*>(__runtime_os_uptime), 0, 0);
+    __register_function_fast(reinterpret_cast<void*>(__runtime_os_freemem), 0, 0);
     
     // Crypto functions
-    __register_function("__runtime_crypto_random_bytes", reinterpret_cast<void*>(__runtime_crypto_random_bytes));
+    __register_function_fast(reinterpret_cast<void*>(__runtime_crypto_random_bytes), 1, 0);
     
     // Timer functions
-    __register_function("__runtime_timer_set_timeout", reinterpret_cast<void*>(__runtime_timer_set_timeout));
-    __register_function("__runtime_timer_clear_timeout", reinterpret_cast<void*>(__runtime_timer_clear_timeout));
+    __register_function_fast(reinterpret_cast<void*>(__runtime_timer_set_timeout), 2, 0);
+    __register_function_fast(reinterpret_cast<void*>(__runtime_timer_clear_timeout), 1, 0);
     
     // Math functions
-    __register_function("__runtime_math_random", reinterpret_cast<void*>(__runtime_math_random));
+    __register_function_fast(reinterpret_cast<void*>(__runtime_math_random), 0, 0);
     
     // Test function
-    __register_function("__runtime_test_simple", reinterpret_cast<void*>(__runtime_test_simple));
+    __register_function_fast(reinterpret_cast<void*>(__runtime_test_simple), 0, 0);
     
-    // Goroutine functions - CRITICAL: These were missing!
-    extern void* __goroutine_spawn(const char* function_name);
-    extern void* __goroutine_spawn_with_arg1(const char* function_name, int64_t arg1);
-    extern void* __goroutine_spawn_with_arg2(const char* function_name, int64_t arg1, int64_t arg2);
-    extern void* __goroutine_spawn_with_scope(const char* function_name, void* captured_scope);
-    extern void* __goroutine_spawn_func_ptr(void* func_ptr, void* arg);
-    extern void* __goroutine_spawn_func_id(int64_t func_id, void* arg);
-    extern void* __goroutine_spawn_with_arg1_ptr(const char* function_name, void* arg1);
-    extern void* __goroutine_spawn_with_arg2_ptr(const char* function_name, void* arg1, void* arg2);
-    
-    // Function lookup
-    extern void* __lookup_function(const char* name);
-    
-    __register_function("__goroutine_spawn", reinterpret_cast<void*>(__goroutine_spawn));
-    __register_function("__goroutine_spawn_with_arg1", reinterpret_cast<void*>(__goroutine_spawn_with_arg1));
-    __register_function("__goroutine_spawn_with_arg2", reinterpret_cast<void*>(__goroutine_spawn_with_arg2));
-    __register_function("__goroutine_spawn_with_scope", reinterpret_cast<void*>(__goroutine_spawn_with_scope));
-    __register_function("__goroutine_spawn_func_ptr", reinterpret_cast<void*>(__goroutine_spawn_func_ptr));
-    __register_function("__goroutine_spawn_func_id", reinterpret_cast<void*>(__goroutine_spawn_func_id));
-    
-    // Register function lookup
-    __register_function("__lookup_function", reinterpret_cast<void*>(__lookup_function));
+    // Legacy goroutine functions removed - using fast spawn system
     
     std::cout << "DEBUG: All runtime syscalls registered!" << std::endl;
 }

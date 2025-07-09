@@ -15,6 +15,7 @@ class TypeInference;
 
 struct FunctionInfo {
     std::string name;
+    uint16_t function_id;  // Fast function ID for O(1) lookup
     std::shared_ptr<FunctionExpression> function_expr;
     void* address;
     size_t code_offset;
@@ -22,7 +23,7 @@ struct FunctionInfo {
     bool is_compiled;
     
     FunctionInfo(const std::string& n, std::shared_ptr<FunctionExpression> expr) 
-        : name(n), function_expr(expr), address(nullptr), code_offset(0), code_size(0), is_compiled(false) {}
+        : name(n), function_id(0), function_expr(expr), address(nullptr), code_offset(0), code_size(0), is_compiled(false) {}
 };
 
 class FunctionCompilationManager {
@@ -39,6 +40,8 @@ public:
     
     // Phase 3: Execution Code Generation
     void* get_function_address(const std::string& function_name);
+    size_t get_function_offset(const std::string& function_name); // NEW: Get relative offset
+    uint16_t get_function_id(const std::string& function_name);
     bool is_function_compiled(const std::string& function_name);
     
     // Utility methods
