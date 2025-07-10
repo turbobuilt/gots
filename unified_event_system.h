@@ -39,17 +39,10 @@ private:
         void* ptr_val;
     } value_;
     std::string string_val_;
-    std::atomic<int> ref_count_{1};
-    
 public:
     Variable(Type type) : type_(type) {}
     
-    void add_ref() { ref_count_.fetch_add(1); }
-    void release() { 
-        if (ref_count_.fetch_sub(1) == 1) {
-            delete this;
-        }
-    }
+    // Note: Memory managed by GC, no manual reference counting needed
     
     // Type-safe getters/setters
     void set_int64(int64_t val) { 
@@ -91,7 +84,6 @@ class LexicalEnvironment {
 private:
     std::unordered_map<std::string, std::shared_ptr<Variable>> variables_;
     std::shared_ptr<LexicalEnvironment> parent_;
-    std::atomic<int> ref_count_{0};
     mutable std::mutex mutex_;
     
 public:
@@ -102,15 +94,7 @@ public:
         std::cout << "DEBUG: LexicalEnvironment destroyed" << std::endl;
     }
     
-    void add_ref() { 
-        ref_count_.fetch_add(1); 
-    }
-    
-    void release() { 
-        if (ref_count_.fetch_sub(1) == 1) {
-            parent_.reset();  // Release parent chain
-        }
-    }
+    // Note: Memory managed by GC, no manual reference counting needed
     
     void set_variable(const std::string& name, std::shared_ptr<Variable> var) {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -139,7 +123,7 @@ public:
         return var;
     }
     
-    size_t get_ref_count() const { return ref_count_.load(); }
+    // Removed ref_count accessor - no longer needed with GC
     std::shared_ptr<LexicalEnvironment> get_parent() const { return parent_; }
 };
 
@@ -391,6 +375,10 @@ std::shared_ptr<Goroutine> get_current_goroutine();
 
 void set_current_lexical_env(std::shared_ptr<LexicalEnvironment> env);
 std::shared_ptr<LexicalEnvironment> get_current_lexical_env();
+
+// Thread cleanup functions
+void register_thread_cleanup_hooks();
+void cleanup_thread_local_resources();
 
 // Initialization
 void initialize_unified_event_system();

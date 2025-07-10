@@ -42,10 +42,11 @@ struct ObjectHeader {
             uint32_t size : 24;        // Object size (16MB max per object)
             uint32_t flags : 8;        // GC flags
             uint32_t type_id : 16;     // Type identifier
-            uint32_t forward_ptr : 16; // Forwarding pointer (during GC)
+            uint32_t reserved : 16;    // Reserved for future use
         };
         uint64_t raw;
     };
+    void* forward_ptr;  // Full forwarding pointer (during GC)
     
     enum Flags : uint8_t {
         MARKED = 0x01,
@@ -275,6 +276,10 @@ public:
     size_t young_used() const;
     size_t old_used() const;
     size_t total_allocated() const;
+    
+    // Memory management
+    void decommit_unused_memory();
+    size_t get_unused_memory() const;
 };
 
 // ============================================================================
@@ -318,9 +323,17 @@ private:
     // Type registry
     TypeRegistry type_registry_;
     
-    // Mark stack for DFS marking
-    std::stack<void*> mark_stack_;
-    std::mutex mark_stack_mutex_;
+    // Work-stealing mark deques for parallel marking
+    struct MarkDeque {
+        std::deque<void*> deque;
+        std::mutex mutex;
+        std::atomic<size_t> size{0};
+    };
+    std::vector<std::unique_ptr<MarkDeque>> mark_deques_;
+    std::atomic<size_t> next_deque_{0};
+    
+    // Thread-local deque index
+    static thread_local int thread_deque_index_;
     
     // Statistics
     std::atomic<size_t> total_pause_time_ms_{0};
@@ -343,6 +356,9 @@ public:
     void add_global_root(void** root);
     void remove_global_root(void** root);
     
+    // Thread cleanup
+    void cleanup_thread_roots(std::thread::id thread_id);
+    
     // Safe points (called by JIT-generated code)
     static inline void safepoint_poll() {
         if (instance().safepoint_requested_.load(std::memory_order_acquire)) {
@@ -357,6 +373,10 @@ public:
     void start_concurrent_marking();
     void wait_for_concurrent_marking();
     
+    // Memory decommit support
+    void decommit_old_generation_tail();
+    size_t last_decommit_size_{0};
+    
     // Statistics
     struct Stats {
         size_t young_collections;
@@ -370,6 +390,39 @@ public:
     
     // Get type registry
     TypeRegistry& get_type_registry() { return type_registry_; }
+    
+    // Thread-local root cleanup
+    class ThreadRootCleanup {
+        std::vector<void**> thread_roots_;
+        GarbageCollector* gc_;
+    public:
+        explicit ThreadRootCleanup(GarbageCollector* gc) : gc_(gc) {}
+        ~ThreadRootCleanup() {
+            cleanup_all_roots();
+        }
+        void add_root(void** root) {
+            thread_roots_.push_back(root);
+            gc_->add_stack_root(root);
+        }
+        void remove_root(void** root) {
+            auto it = std::find(thread_roots_.begin(), thread_roots_.end(), root);
+            if (it != thread_roots_.end()) {
+                thread_roots_.erase(it);
+                gc_->remove_stack_root(root);
+            }
+        }
+        void cleanup_all_roots() {
+            for (void** root : thread_roots_) {
+                gc_->remove_stack_root(root);
+            }
+            thread_roots_.clear();
+        }
+        size_t root_count() const {
+            return thread_roots_.size();
+        }
+    };
+    
+    static thread_local ThreadRootCleanup* thread_root_cleanup_;
     
     Stats get_stats() const;
     
@@ -389,6 +442,9 @@ private:
     void mark_roots();
     void mark_object(void* obj);
     void process_mark_stack();
+    void process_mark_deque(int deque_index);
+    bool steal_work(int from_deque, void*& obj);
+    int get_thread_deque_index();
     
     // Copying/Compacting
     void* copy_object(void* obj, bool to_old_gen);
@@ -402,6 +458,32 @@ private:
 // ============================================================================
 // JIT INTEGRATION HELPERS
 // ============================================================================
+
+// RAII helper for automatic root registration/cleanup
+class ScopedGCRoot {
+    void** root_;
+    bool registered_;
+public:
+    explicit ScopedGCRoot(void** root) : root_(root), registered_(false) {
+        if (root_) {
+            GarbageCollector::instance().add_stack_root(root_);
+            registered_ = true;
+        }
+    }
+    ~ScopedGCRoot() {
+        if (registered_ && root_) {
+            GarbageCollector::instance().remove_stack_root(root_);
+        }
+    }
+    // Prevent copying
+    ScopedGCRoot(const ScopedGCRoot&) = delete;
+    ScopedGCRoot& operator=(const ScopedGCRoot&) = delete;
+    // Allow moving
+    ScopedGCRoot(ScopedGCRoot&& other) noexcept 
+        : root_(other.root_), registered_(other.registered_) {
+        other.registered_ = false;
+    }
+};
 
 // These are the actual functions that JIT will inline or call
 extern "C" {

@@ -170,6 +170,12 @@ struct RuntimeObject {
         void* nextGC;
     };
     
+    struct LockObject {
+        static constexpr const char* OBJECT_NAME = "lock";
+        
+        void* create;           // runtime.lock.create() -> new Lock()
+    };
+    
     // Runtime object layout - designed for cache efficiency
     TimeObject time;
     ProcessObject process;
@@ -182,6 +188,7 @@ struct RuntimeObject {
     ConsoleObject console;
     JITObject jit;
     GCObject gc;
+    LockObject lock;
     
     // Direct function pointers for frequently used operations
     void* eval;
@@ -224,6 +231,9 @@ inline void* resolve_runtime_method(const char* object_name, const char* method_
     } else if (strcmp(object_name, "fs") == 0) {
         if (strcmp(method_name, "readFile") == 0) return global_runtime->fs.readFile;
         if (strcmp(method_name, "writeFile") == 0) return global_runtime->fs.writeFile;
+        // ... etc
+    } else if (strcmp(object_name, "lock") == 0) {
+        if (strcmp(method_name, "create") == 0) return global_runtime->lock.create;
         // ... etc
     }
     // ... more objects

@@ -1,0 +1,413 @@
+#include "memory_manager.h"
+#include <algorithm>
+#include <stack>
+#include <iostream>
+
+namespace gots {
+
+// Global instance
+MemoryManager* g_memory_manager = nullptr;
+
+// ============================================================================
+// MANAGED OBJECT IMPLEMENTATION
+// ============================================================================
+
+ManagedObject::ManagedObject() {
+    allocation_id_ = MemoryManager::instance().next_allocation_id_.fetch_add(1);
+}
+
+ManagedObject::~ManagedObject() {
+    // Ensure we're removed from parent's children list
+    if (auto parent = parent_scope_.load()) {
+        parent->remove_child_scope(this);
+    }
+    
+    // Clear our children list
+    {
+        std::lock_guard<std::mutex> lock(children_mutex_);
+        child_scopes_.clear();
+    }
+    
+    // Run cleanup callback if set
+    if (cleanup_callback_) {
+        cleanup_callback_();
+    }
+}
+
+void ManagedObject::set_parent_scope(ManagedObject* parent) {
+    // Remove from old parent
+    if (auto old_parent = parent_scope_.load()) {
+        old_parent->remove_child_scope(this);
+    }
+    
+    // Set new parent
+    parent_scope_.store(parent);
+    
+    // Add to new parent's children
+    if (parent) {
+        parent->add_child_scope(this);
+        parent->add_ref(); // Parent must survive while child exists
+    }
+}
+
+void ManagedObject::add_child_scope(ManagedObject* child) {
+    std::lock_guard<std::mutex> lock(children_mutex_);
+    child_scopes_.push_back(child);
+}
+
+void ManagedObject::remove_child_scope(ManagedObject* child) {
+    std::lock_guard<std::mutex> lock(children_mutex_);
+    child_scopes_.erase(
+        std::remove(child_scopes_.begin(), child_scopes_.end(), child),
+        child_scopes_.end()
+    );
+}
+
+bool ManagedObject::has_active_children() const {
+    std::lock_guard<std::mutex> lock(children_mutex_);
+    return !child_scopes_.empty();
+}
+
+void ManagedObject::notify_zero_refcount() {
+    // Check if we have active children
+    if (has_active_children()) {
+        // Don't delete yet - mark for cycle check
+        marked_for_cycle_check_.store(true);
+        MemoryManager::instance().cycle_detector_->add_candidate(this);
+    } else {
+        // Safe to delete
+        MemoryManager::instance().schedule_deletion(this);
+    }
+}
+
+// ============================================================================
+// CYCLE DETECTOR IMPLEMENTATION
+// ============================================================================
+
+CycleDetector::CycleDetector() {
+    detector_thread_ = std::thread(&CycleDetector::detector_loop, this);
+}
+
+CycleDetector::~CycleDetector() {
+    stop();
+}
+
+void CycleDetector::stop() {
+    running_.store(false);
+    candidates_cv_.notify_all();
+    if (detector_thread_.joinable()) {
+        detector_thread_.join();
+    }
+}
+
+void CycleDetector::add_candidate(ManagedObject* obj) {
+    {
+        std::lock_guard<std::mutex> lock(candidates_mutex_);
+        candidates_.push({obj, std::chrono::steady_clock::now()});
+    }
+    candidates_cv_.notify_one();
+}
+
+void CycleDetector::detector_loop() {
+    while (running_.load()) {
+        std::unique_lock<std::mutex> lock(candidates_mutex_);
+        
+        // Wait for candidates or timeout every second
+        candidates_cv_.wait_for(lock, std::chrono::seconds(1), [this] {
+            return !candidates_.empty() || !running_.load();
+        });
+        
+        // Process candidates older than 100ms (let transient cycles resolve)
+        auto now = std::chrono::steady_clock::now();
+        std::vector<ManagedObject*> to_check;
+        
+        while (!candidates_.empty()) {
+            auto& candidate = candidates_.front();
+            auto age = now - candidate.added_time;
+            
+            if (age > std::chrono::milliseconds(100)) {
+                to_check.push_back(candidate.object);
+                candidates_.pop();
+            } else {
+                break; // Remaining candidates are too young
+            }
+        }
+        
+        lock.unlock();
+        
+        // Check each candidate for cycles
+        for (auto obj : to_check) {
+            if (obj->ref_count_.load() == 0 && detect_cycle_from(obj)) {
+                cycles_detected_.fetch_add(1);
+            }
+        }
+    }
+}
+
+bool CycleDetector::detect_cycle_from(ManagedObject* root) {
+    // Use DFS with color marking to detect cycles
+    enum Color { WHITE, GRAY, BLACK };
+    std::unordered_map<ManagedObject*, Color> colors;
+    std::vector<ManagedObject*> cycle_path;
+    std::stack<std::pair<ManagedObject*, bool>> stack;
+    
+    stack.push({root, false});
+    
+    while (!stack.empty()) {
+        auto [obj, backtrack] = stack.top();
+        stack.pop();
+        
+        if (backtrack) {
+            colors[obj] = BLACK;
+            cycle_path.pop_back();
+            continue;
+        }
+        
+        if (colors[obj] == GRAY) {
+            // Found cycle
+            collect_cycle(cycle_path);
+            return true;
+        }
+        
+        if (colors[obj] == BLACK) {
+            continue;
+        }
+        
+        colors[obj] = GRAY;
+        cycle_path.push_back(obj);
+        stack.push({obj, true}); // For backtracking
+        
+        // Visit all referenced objects
+        obj->visit_references([&](ManagedObject* ref) {
+            if (ref && colors[ref] != BLACK) {
+                stack.push({ref, false});
+            }
+        });
+    }
+    
+    return false;
+}
+
+void CycleDetector::collect_cycle(const std::vector<ManagedObject*>& cycle) {
+    // Break the cycle by clearing references in objects
+    for (auto obj : cycle) {
+        obj->cleanup();
+        objects_freed_.fetch_add(1);
+        
+        // Schedule for deletion
+        MemoryManager::instance().schedule_deletion(obj);
+    }
+}
+
+// ============================================================================
+// MEMORY MANAGER IMPLEMENTATION
+// ============================================================================
+
+MemoryManager::MemoryManager() {
+    cycle_detector_ = std::make_unique<CycleDetector>();
+    memory_thread_ = std::thread(&MemoryManager::memory_management_loop, this);
+}
+
+MemoryManager::~MemoryManager() {
+    running_.store(false);
+    deletion_cv_.notify_all();
+    if (memory_thread_.joinable()) {
+        memory_thread_.join();
+    }
+}
+
+void MemoryManager::register_object(ManagedObject* obj) {
+    {
+        std::lock_guard<std::mutex> lock(objects_mutex_);
+        all_objects_[obj->allocation_id_] = obj;
+    }
+    total_allocations_.fetch_add(1);
+    
+    // Estimate memory usage (simplified)
+    current_memory_usage_.fetch_add(sizeof(ManagedObject));
+}
+
+void MemoryManager::unregister_object(ManagedObject* obj) {
+    {
+        std::lock_guard<std::mutex> lock(objects_mutex_);
+        all_objects_.erase(obj->allocation_id_);
+    }
+    total_deallocations_.fetch_add(1);
+    current_memory_usage_.fetch_sub(sizeof(ManagedObject));
+}
+
+void MemoryManager::schedule_deletion(ManagedObject* obj) {
+    {
+        std::lock_guard<std::mutex> lock(deletion_mutex_);
+        deletion_queue_.push({obj, std::chrono::steady_clock::now()});
+    }
+    deletion_cv_.notify_one();
+}
+
+void MemoryManager::memory_management_loop() {
+    while (running_.load()) {
+        std::unique_lock<std::mutex> lock(deletion_mutex_);
+        
+        // Wait for deletions or timeout
+        deletion_cv_.wait_for(lock, std::chrono::milliseconds(50), [this] {
+            return !deletion_queue_.empty() || !running_.load();
+        });
+        
+        lock.unlock();
+        
+        // Process deletions
+        process_deletions();
+        
+        // Check memory pressure periodically
+        static auto last_check = std::chrono::steady_clock::now();
+        auto now = std::chrono::steady_clock::now();
+        if (now - last_check > std::chrono::seconds(1)) {
+            check_memory_pressure();
+            last_check = now;
+        }
+    }
+    
+    // Final cleanup
+    process_deletions();
+}
+
+void MemoryManager::process_deletions() {
+    std::vector<ManagedObject*> to_delete;
+    
+    {
+        std::lock_guard<std::mutex> lock(deletion_mutex_);
+        auto now = std::chrono::steady_clock::now();
+        
+        // Process deletions older than 10ms
+        while (!deletion_queue_.empty()) {
+            auto& item = deletion_queue_.front();
+            auto age = now - item.deletion_time;
+            
+            if (age > std::chrono::milliseconds(10)) {
+                to_delete.push_back(item.object);
+                deletion_queue_.pop();
+            } else {
+                break;
+            }
+        }
+    }
+    
+    // Delete objects outside of lock
+    for (auto obj : to_delete) {
+        unregister_object(obj);
+        delete obj;
+    }
+}
+
+void MemoryManager::check_memory_pressure() {
+    // Simple memory pressure check
+    auto current_usage = current_memory_usage_.load();
+    auto active_objects = get_active_objects();
+    
+    // If we have too many objects or high memory usage, trigger collection
+    if (active_objects > 10000 || current_usage > 1024 * 1024 * 100) { // 100MB
+        trigger_collection();
+    }
+}
+
+void MemoryManager::trigger_collection() {
+    // Force cycle detection on all objects with zero refcount
+    std::lock_guard<std::mutex> lock(objects_mutex_);
+    
+    for (const auto& [id, obj] : all_objects_) {
+        if (obj->ref_count_.load() == 0 && !obj->marked_for_cycle_check_.load()) {
+            obj->marked_for_cycle_check_.store(true);
+            cycle_detector_->add_candidate(obj);
+        }
+    }
+}
+
+uint64_t MemoryManager::get_active_objects() const {
+    std::lock_guard<std::mutex> lock(objects_mutex_);
+    return all_objects_.size();
+}
+
+MemoryManager& MemoryManager::instance() {
+    if (!g_memory_manager) {
+        g_memory_manager = new MemoryManager();
+    }
+    return *g_memory_manager;
+}
+
+void MemoryManager::initialize() {
+    if (!g_memory_manager) {
+        g_memory_manager = new MemoryManager();
+    }
+}
+
+void MemoryManager::shutdown() {
+    if (g_memory_manager) {
+        delete g_memory_manager;
+        g_memory_manager = nullptr;
+    }
+}
+
+// ============================================================================
+// C API IMPLEMENTATION
+// ============================================================================
+
+extern "C" {
+
+void* __mem_alloc_managed(size_t size, const char* type_name) {
+    // For now, return raw pointer - in real implementation, 
+    // this would create appropriate managed object based on type
+    auto obj = new ManagedObject();
+    MemoryManager::instance().register_object(obj);
+    return obj;
+}
+
+void __mem_add_ref(void* ptr) {
+    if (auto obj = static_cast<ManagedObject*>(ptr)) {
+        obj->add_ref();
+    }
+}
+
+void __mem_release(void* ptr) {
+    if (auto obj = static_cast<ManagedObject*>(ptr)) {
+        obj->release();
+    }
+}
+
+void __mem_set_parent_scope(void* child, void* parent) {
+    if (auto child_obj = static_cast<ManagedObject*>(child)) {
+        child_obj->set_parent_scope(static_cast<ManagedObject*>(parent));
+    }
+}
+
+void* __mem_create_closure(void* scope, const char** vars, int var_count, void* function) {
+    // Simplified implementation
+    std::vector<std::string> captured_vars;
+    for (int i = 0; i < var_count; ++i) {
+        captured_vars.push_back(vars[i]);
+    }
+    
+    auto scope_obj = static_cast<ManagedScope*>(scope);
+    auto closure = new ManagedClosure(
+        ManagedPtr<ManagedScope>(scope_obj),
+        captured_vars,
+        *static_cast<std::function<void()>*>(function)
+    );
+    
+    MemoryManager::instance().register_object(closure);
+    return closure;
+}
+
+void __mem_trigger_collection() {
+    MemoryManager::instance().trigger_collection();
+}
+
+void __mem_get_stats(uint64_t* allocations, uint64_t* deallocations, uint64_t* current_usage) {
+    auto& mgr = MemoryManager::instance();
+    if (allocations) *allocations = mgr.get_total_allocations();
+    if (deallocations) *deallocations = mgr.get_total_deallocations();
+    if (current_usage) *current_usage = mgr.get_current_memory_usage();
+}
+
+} // extern "C"
+
+} // namespace gots

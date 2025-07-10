@@ -26,20 +26,49 @@ private:
         int depth;
     };
     
-    // Per-thread work queues
+    // Lock-free work-stealing deque (Chase-Lev algorithm)
     struct WorkQueue {
-        std::queue<MarkTask> tasks;
-        std::mutex mutex;
+        static constexpr size_t QUEUE_SIZE = 4096;
+        static constexpr size_t QUEUE_MASK = QUEUE_SIZE - 1;
+        
+        // Lock-free deque using atomic top/bottom pointers
+        alignas(64) MarkTask tasks[QUEUE_SIZE];  // Cache-line aligned
+        alignas(64) std::atomic<size_t> top{0};     // For stealing (other threads)
+        alignas(64) std::atomic<size_t> bottom{0};  // For owner (this thread)
         std::atomic<bool> has_work{false};
+        
+        WorkQueue() {
+            // Initialize all tasks to null
+            for (size_t i = 0; i < QUEUE_SIZE; ++i) {
+                tasks[i] = {nullptr, 0};
+            }
+        }
     };
     
     std::vector<std::unique_ptr<WorkQueue>> worker_queues_;
     std::atomic<int> active_workers_{0};
     std::atomic<bool> marking_done_{false};
     
-    // Global overflow queue for load balancing
-    std::queue<MarkTask> overflow_queue_;
-    std::mutex overflow_mutex_;
+    // Lock-free overflow queue using atomic linked list with size limit
+    struct OverflowNode {
+        MarkTask task;
+        std::atomic<OverflowNode*> next{nullptr};
+    };
+    
+    std::atomic<OverflowNode*> overflow_head_{nullptr};
+    std::atomic<OverflowNode*> overflow_tail_{nullptr};
+    
+    // Track overflow queue size to prevent unbounded growth
+    std::atomic<size_t> overflow_queue_size_{0};
+    static constexpr size_t MAX_OVERFLOW_SIZE = 10000; // Limit overflow queue size
+    
+    // Node pool to avoid allocations
+    static constexpr size_t OVERFLOW_POOL_SIZE = 1024;
+    OverflowNode overflow_pool_[OVERFLOW_POOL_SIZE];
+    std::atomic<size_t> overflow_pool_index_{0};
+    
+    // Emergency fallback for when overflow queue is full
+    std::atomic<size_t> dropped_tasks_{0};
     
 public:
     WorkStealingMarkStack(int num_workers);
@@ -65,6 +94,26 @@ public:
     
     // Get number of workers
     int get_worker_count() const { return worker_queues_.size(); }
+    
+    // Get overflow queue statistics
+    struct OverflowStats {
+        size_t current_size;
+        size_t max_size;
+        size_t dropped_tasks;
+    };
+    OverflowStats get_overflow_stats() const {
+        return {
+            overflow_queue_size_.load(std::memory_order_relaxed),
+            MAX_OVERFLOW_SIZE,
+            dropped_tasks_.load(std::memory_order_relaxed)
+        };
+    }
+    
+private:
+    // Lock-free overflow queue operations
+    void push_to_overflow_lockfree(const MarkTask& task);
+    bool pop_from_overflow_lockfree(MarkTask& task);
+    OverflowNode* allocate_overflow_node();
 };
 
 // ============================================================================

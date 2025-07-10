@@ -1,0 +1,100 @@
+# GoTS Goroutine-Aware Garbage Collector Makefile
+
+CXX = g++
+CXXFLAGS = -std=c++17 -Wall -Wextra -O3 -pthread -fPIC -march=native
+DEBUG_FLAGS = -g -DDEBUG -O0 -fsanitize=thread
+RELEASE_FLAGS = -O3 -DNDEBUG -flto -fomit-frame-pointer
+INCLUDES = -I.
+LIBS = -pthread
+
+# Source files
+ESCAPE_ANALYSIS_SOURCES = goroutine_escape_analysis.cpp
+HEAP_MANAGER_SOURCES = goroutine_heap_manager.cpp
+WRITE_BARRIERS_SOURCES = goroutine_write_barriers.cpp
+COORDINATED_GC_SOURCES = goroutine_coordinated_gc.cpp
+JIT_CODEGEN_SOURCES = goroutine_jit_codegen.cpp
+RUNTIME_SOURCES = goroutine_gc_runtime.cpp
+TEST_SOURCES = goroutine_gc_test_suite.cpp
+
+# Object files
+ESCAPE_ANALYSIS_OBJECTS = $(ESCAPE_ANALYSIS_SOURCES:.cpp=.o)
+HEAP_MANAGER_OBJECTS = $(HEAP_MANAGER_SOURCES:.cpp=.o)
+WRITE_BARRIERS_OBJECTS = $(WRITE_BARRIERS_SOURCES:.cpp=.o)
+COORDINATED_GC_OBJECTS = $(COORDINATED_GC_SOURCES:.cpp=.o)
+JIT_CODEGEN_OBJECTS = $(JIT_CODEGEN_SOURCES:.cpp=.o)
+RUNTIME_OBJECTS = $(RUNTIME_SOURCES:.cpp=.o)
+TEST_OBJECTS = $(TEST_SOURCES:.cpp=.o)
+
+# All object files
+ALL_OBJECTS = $(ESCAPE_ANALYSIS_OBJECTS) $(HEAP_MANAGER_OBJECTS) $(WRITE_BARRIERS_OBJECTS) \
+              $(COORDINATED_GC_OBJECTS) $(JIT_CODEGEN_OBJECTS) $(RUNTIME_OBJECTS)
+
+# Targets
+LIBRARY = libgoroutine_gc.a
+SHARED_LIBRARY = libgoroutine_gc.so
+TEST_EXECUTABLE = goroutine_gc_tests
+
+.PHONY: all clean debug test install uninstall help
+
+# Default target
+all: $(LIBRARY) $(SHARED_LIBRARY) $(TEST_EXECUTABLE)
+
+# Static library
+$(LIBRARY): $(ALL_OBJECTS)
+	@echo "Creating static library..."
+	ar rcs $@ $^
+	@echo "Static library created: $@"
+
+# Shared library
+$(SHARED_LIBRARY): $(ALL_OBJECTS)
+	@echo "Creating shared library..."
+	$(CXX) -shared $(CXXFLAGS) $(LIBS) -o $@ $^
+	@echo "Shared library created: $@"
+
+# Test executable
+$(TEST_EXECUTABLE): $(TEST_OBJECTS) $(ALL_OBJECTS)
+	@echo "Creating test executable..."
+	$(CXX) $(CXXFLAGS) $(LIBS) -o $@ $^
+	@echo "Test executable created: $@"
+
+# Object file compilation
+%.o: %.cpp goroutine_aware_gc.h
+	@echo "Compiling $<..."
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
+
+# Debug build
+debug: CXXFLAGS += $(DEBUG_FLAGS)
+debug: clean all
+	@echo "Debug build completed with thread sanitizer"
+
+# Release build (optimized)
+release: CXXFLAGS += $(RELEASE_FLAGS)
+release: clean all
+	@echo "Release build completed with maximum optimization"
+
+# Run tests
+test: $(TEST_EXECUTABLE)
+	@echo "Running test suite..."
+	./$(TEST_EXECUTABLE)
+
+# Clean build artifacts
+clean:
+	@echo "Cleaning build artifacts..."
+	rm -f *.o $(LIBRARY) $(SHARED_LIBRARY) $(TEST_EXECUTABLE)
+	@echo "Clean completed"
+
+help:
+	@echo "GoTS Goroutine-Aware GC Makefile"
+	@echo "================================"
+	@echo ""
+	@echo "Available targets:"
+	@echo "  all         - Build static library, shared library, and tests (default)"
+	@echo "  debug       - Build with debug symbols, no optimization, and thread sanitizer"
+	@echo "  release     - Build with maximum optimization (O3, LTO, native arch)"
+	@echo "  test        - Run the complete test suite"
+	@echo "  clean       - Remove all build artifacts"
+	@echo "  help        - Show this help message"
+	@echo ""
+	@echo "Performance tips:"
+	@echo "  Use 'make release' for production builds"
+	@echo "  Use 'make debug' for development and testing"

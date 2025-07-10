@@ -1,0 +1,371 @@
+#pragma once
+
+#include <atomic>
+#include <thread>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+#include <queue>
+#include <mutex>
+#include <condition_variable>
+#include <chrono>
+#include <functional>
+
+namespace gots {
+
+// Forward declarations
+class ManagedObject;
+class MemoryManager;
+class CycleDetector;
+
+// Global memory manager instance
+extern MemoryManager* g_memory_manager;
+
+// ============================================================================
+// MANAGED OBJECT - Base class for all reference-counted objects
+// ============================================================================
+
+class ManagedObject {
+protected:
+    std::atomic<int64_t> ref_count_{1};
+    std::atomic<bool> marked_for_cycle_check_{false};
+    std::atomic<uint64_t> allocation_id_{0};
+    
+    // For scope hierarchy tracking
+    std::atomic<ManagedObject*> parent_scope_{nullptr};
+    std::vector<ManagedObject*> child_scopes_;
+    mutable std::mutex children_mutex_;
+    
+    // Callback for custom cleanup
+    std::function<void()> cleanup_callback_;
+    
+    friend class MemoryManager;
+    friend class CycleDetector;
+
+public:
+    ManagedObject();
+    virtual ~ManagedObject();
+    
+    // Reference counting
+    void add_ref() {
+        ref_count_.fetch_add(1, std::memory_order_relaxed);
+    }
+    
+    void release() {
+        if (ref_count_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+            // Notify memory manager for deferred deletion
+            notify_zero_refcount();
+        }
+    }
+    
+    int64_t get_ref_count() const {
+        return ref_count_.load(std::memory_order_relaxed);
+    }
+    
+    // Parent-child relationship for lexical scopes
+    void set_parent_scope(ManagedObject* parent);
+    void add_child_scope(ManagedObject* child);
+    void remove_child_scope(ManagedObject* child);
+    bool has_active_children() const;
+    
+    // For cycle detection
+    virtual void visit_references(std::function<void(ManagedObject*)> visitor) {}
+    
+protected:
+    void notify_zero_refcount();
+    virtual void cleanup() {}
+};
+
+// ============================================================================
+// MANAGED POINTER - Smart pointer with automatic reference counting
+// ============================================================================
+
+template<typename T>
+class ManagedPtr {
+private:
+    T* ptr_{nullptr};
+    
+public:
+    ManagedPtr() = default;
+    
+    explicit ManagedPtr(T* ptr) : ptr_(ptr) {
+        if (ptr_) {
+            static_assert(std::is_base_of_v<ManagedObject, T>, 
+                         "T must inherit from ManagedObject");
+        }
+    }
+    
+    ManagedPtr(const ManagedPtr& other) : ptr_(other.ptr_) {
+        if (ptr_) ptr_->add_ref();
+    }
+    
+    ManagedPtr(ManagedPtr&& other) noexcept : ptr_(other.ptr_) {
+        other.ptr_ = nullptr;
+    }
+    
+    ~ManagedPtr() {
+        if (ptr_) ptr_->release();
+    }
+    
+    ManagedPtr& operator=(const ManagedPtr& other) {
+        if (this != &other) {
+            if (ptr_) ptr_->release();
+            ptr_ = other.ptr_;
+            if (ptr_) ptr_->add_ref();
+        }
+        return *this;
+    }
+    
+    ManagedPtr& operator=(ManagedPtr&& other) noexcept {
+        if (this != &other) {
+            if (ptr_) ptr_->release();
+            ptr_ = other.ptr_;
+            other.ptr_ = nullptr;
+        }
+        return *this;
+    }
+    
+    T* operator->() const { return ptr_; }
+    T& operator*() const { return *ptr_; }
+    T* get() const { return ptr_; }
+    explicit operator bool() const { return ptr_ != nullptr; }
+    
+    void reset(T* ptr = nullptr) {
+        if (ptr_) ptr_->release();
+        ptr_ = ptr;
+    }
+};
+
+// ============================================================================
+// CYCLE DETECTOR - Runs on separate thread to detect reference cycles
+// ============================================================================
+
+class CycleDetector {
+private:
+    struct CycleCandidate {
+        ManagedObject* object;
+        std::chrono::steady_clock::time_point added_time;
+    };
+    
+    std::queue<CycleCandidate> candidates_;
+    std::mutex candidates_mutex_;
+    std::condition_variable candidates_cv_;
+    
+    std::thread detector_thread_;
+    std::atomic<bool> running_{true};
+    
+    // Statistics
+    std::atomic<uint64_t> cycles_detected_{0};
+    std::atomic<uint64_t> objects_freed_{0};
+    
+    void detector_loop();
+    bool detect_cycle_from(ManagedObject* root);
+    void collect_cycle(const std::vector<ManagedObject*>& cycle);
+
+public:
+    CycleDetector();
+    ~CycleDetector();
+    
+    void add_candidate(ManagedObject* obj);
+    void stop();
+    
+    uint64_t get_cycles_detected() const { return cycles_detected_.load(); }
+    uint64_t get_objects_freed() const { return objects_freed_.load(); }
+};
+
+// ============================================================================
+// MEMORY MANAGER - Central memory management system
+// ============================================================================
+
+class MemoryManager {
+private:
+    // Object tracking
+    std::unordered_map<uint64_t, ManagedObject*> all_objects_;
+    std::mutex objects_mutex_;
+    std::atomic<uint64_t> next_allocation_id_{1};
+    
+    // Deferred deletion queue
+    struct DeferredDeletion {
+        ManagedObject* object;
+        std::chrono::steady_clock::time_point deletion_time;
+    };
+    std::queue<DeferredDeletion> deletion_queue_;
+    std::mutex deletion_mutex_;
+    std::condition_variable deletion_cv_;
+    
+    // Memory management thread
+    std::thread memory_thread_;
+    std::atomic<bool> running_{true};
+    
+    // Cycle detector
+    std::unique_ptr<CycleDetector> cycle_detector_;
+    
+    // Statistics
+    std::atomic<uint64_t> total_allocations_{0};
+    std::atomic<uint64_t> total_deallocations_{0};
+    std::atomic<uint64_t> current_memory_usage_{0};
+    
+    void memory_management_loop();
+    void process_deletions();
+    void check_memory_pressure();
+
+public:
+    MemoryManager();
+    ~MemoryManager();
+    
+    // Object registration
+    void register_object(ManagedObject* obj);
+    void unregister_object(ManagedObject* obj);
+    
+    // Deferred deletion
+    void schedule_deletion(ManagedObject* obj);
+    
+    // Memory pressure handling
+    void trigger_collection();
+    
+    // Statistics
+    uint64_t get_total_allocations() const { return total_allocations_.load(); }
+    uint64_t get_total_deallocations() const { return total_deallocations_.load(); }
+    uint64_t get_current_memory_usage() const { return current_memory_usage_.load(); }
+    uint64_t get_active_objects() const;
+    
+    // Singleton access
+    static MemoryManager& instance();
+    static void initialize();
+    static void shutdown();
+};
+
+// ============================================================================
+// MANAGED ALLOCATION - Template for creating managed objects
+// ============================================================================
+
+template<typename T, typename... Args>
+ManagedPtr<T> make_managed(Args&&... args) {
+    static_assert(std::is_base_of_v<ManagedObject, T>, 
+                 "T must inherit from ManagedObject");
+    
+    T* obj = new T(std::forward<Args>(args)...);
+    MemoryManager::instance().register_object(obj);
+    return ManagedPtr<T>(obj);
+}
+
+// ============================================================================
+// SCOPE-AWARE OBJECTS - For lexical scope management
+// ============================================================================
+
+class ManagedScope : public ManagedObject {
+private:
+    std::unordered_map<std::string, ManagedPtr<ManagedObject>> variables_;
+    mutable std::shared_mutex variables_mutex_;
+    
+public:
+    ManagedScope(ManagedScope* parent = nullptr) {
+        if (parent) {
+            set_parent_scope(parent);
+        }
+    }
+    
+    void set_variable(const std::string& name, ManagedPtr<ManagedObject> value) {
+        std::unique_lock<std::shared_mutex> lock(variables_mutex_);
+        variables_[name] = value;
+    }
+    
+    ManagedPtr<ManagedObject> get_variable(const std::string& name) const {
+        std::shared_lock<std::shared_mutex> lock(variables_mutex_);
+        auto it = variables_.find(name);
+        if (it != variables_.end()) {
+            return it->second;
+        }
+        
+        // Check parent scope
+        if (auto parent = dynamic_cast<ManagedScope*>(parent_scope_.load())) {
+            return parent->get_variable(name);
+        }
+        
+        return ManagedPtr<ManagedObject>();
+    }
+    
+    void visit_references(std::function<void(ManagedObject*)> visitor) override {
+        std::shared_lock<std::shared_mutex> lock(variables_mutex_);
+        for (const auto& [name, obj] : variables_) {
+            if (obj) visitor(obj.get());
+        }
+        
+        if (auto parent = parent_scope_.load()) {
+            visitor(parent);
+        }
+    }
+    
+protected:
+    void cleanup() override {
+        variables_.clear();
+    }
+};
+
+// ============================================================================
+// CLOSURE SUPPORT - Smart variable capture
+// ============================================================================
+
+class ManagedClosure : public ManagedObject {
+private:
+    ManagedPtr<ManagedScope> captured_scope_;
+    std::unordered_set<std::string> captured_variables_;
+    std::function<void()> function_;
+    
+public:
+    ManagedClosure(ManagedPtr<ManagedScope> scope, 
+                   const std::vector<std::string>& vars,
+                   std::function<void()> fn)
+        : captured_scope_(scope), 
+          captured_variables_(vars.begin(), vars.end()),
+          function_(fn) {
+        
+        // Increment ref count on captured variables
+        for (const auto& var : captured_variables_) {
+            if (auto obj = captured_scope_->get_variable(var)) {
+                obj->add_ref();
+            }
+        }
+    }
+    
+    ~ManagedClosure() {
+        // Decrement ref count on captured variables
+        for (const auto& var : captured_variables_) {
+            if (auto obj = captured_scope_->get_variable(var)) {
+                obj->release();
+            }
+        }
+    }
+    
+    void execute() {
+        if (function_) function_();
+    }
+    
+    void visit_references(std::function<void(ManagedObject*)> visitor) override {
+        if (captured_scope_) {
+            visitor(captured_scope_.get());
+        }
+    }
+};
+
+// ============================================================================
+// INTEGRATION WITH EXISTING CODE
+// ============================================================================
+
+// Convert existing LexicalScope to use ManagedScope
+class ManagedLexicalScope : public ManagedScope {
+    // Implementation will wrap existing LexicalScope functionality
+};
+
+// Runtime C API for memory management
+extern "C" {
+    void* __mem_alloc_managed(size_t size, const char* type_name);
+    void __mem_add_ref(void* ptr);
+    void __mem_release(void* ptr);
+    void __mem_set_parent_scope(void* child, void* parent);
+    void* __mem_create_closure(void* scope, const char** vars, int var_count, void* function);
+    void __mem_trigger_collection();
+    void __mem_get_stats(uint64_t* allocations, uint64_t* deallocations, uint64_t* current_usage);
+}
+
+} // namespace gots

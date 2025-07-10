@@ -366,6 +366,14 @@ extern "C" {
     double __runtime_math_random();
     void __runtime_math_random_seed(int64_t seed);
     
+    // Lock syscalls - thread-safe locking primitives
+    void* __runtime_lock_create();
+    void __runtime_lock_lock(void* lock_ptr);
+    void __runtime_lock_unlock(void* lock_ptr);
+    bool __runtime_lock_try_lock(void* lock_ptr);
+    bool __runtime_lock_try_lock_for(void* lock_ptr, int64_t timeout_ms);
+    bool __runtime_lock_is_locked_by_current(void* lock_ptr);
+    
     // Internal debugging
     void* __runtime_heap_snapshot();
     void* __runtime_cpu_profile(int64_t duration_ms);

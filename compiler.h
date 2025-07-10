@@ -205,6 +205,20 @@ public:
     
     // Ultra-High-Performance Direct Address Calls - Zero overhead
     virtual void emit_goroutine_spawn_direct(void* function_address) = 0;
+    
+    // Lock assembly emission - High-performance atomic operations
+    virtual void emit_lock_acquire(int lock_reg) = 0;
+    virtual void emit_lock_release(int lock_reg) = 0;
+    virtual void emit_lock_try_acquire(int lock_reg, int result_reg) = 0;
+    virtual void emit_lock_try_acquire_timeout(int lock_reg, int timeout_reg, int result_reg) = 0;
+    
+    // Atomic operations for lock implementation
+    virtual void emit_atomic_compare_exchange(int ptr_reg, int expected_reg, int desired_reg, int result_reg) = 0;
+    virtual void emit_atomic_fetch_add(int ptr_reg, int value_reg, int result_reg) = 0;
+    virtual void emit_atomic_store(int ptr_reg, int value_reg, int memory_order) = 0;
+    virtual void emit_atomic_load(int ptr_reg, int result_reg, int memory_order) = 0;
+    virtual void emit_memory_fence(int fence_type) = 0;
+    
     virtual std::vector<uint8_t> get_code() const = 0;
     virtual void clear() = 0;
     virtual size_t get_current_offset() const = 0;
@@ -275,6 +289,19 @@ public:
     
     // Ultra-High-Performance Direct Address Calls - Zero overhead
     void emit_goroutine_spawn_direct(void* function_address) override;
+    
+    // Lock assembly emission - High-performance atomic operations
+    void emit_lock_acquire(int lock_reg) override;
+    void emit_lock_release(int lock_reg) override;
+    void emit_lock_try_acquire(int lock_reg, int result_reg) override;
+    void emit_lock_try_acquire_timeout(int lock_reg, int timeout_reg, int result_reg) override;
+    
+    // Atomic operations for lock implementation
+    void emit_atomic_compare_exchange(int ptr_reg, int expected_reg, int desired_reg, int result_reg) override;
+    void emit_atomic_fetch_add(int ptr_reg, int value_reg, int result_reg) override;
+    void emit_atomic_store(int ptr_reg, int value_reg, int memory_order) override;
+    void emit_atomic_load(int ptr_reg, int result_reg, int memory_order) override;
+    void emit_memory_fence(int fence_type) override;
     
     // Near-Optimal Relative Offset Calls - One LEA instruction overhead
     void emit_goroutine_spawn_with_offset(size_t function_offset);
@@ -353,6 +380,19 @@ public:
     
     // Ultra-High-Performance Direct Address Calls - Zero overhead
     void emit_goroutine_spawn_direct(void* function_address) override;
+    
+    // Lock assembly emission - High-performance atomic operations
+    void emit_lock_acquire(int lock_reg) override;
+    void emit_lock_release(int lock_reg) override;
+    void emit_lock_try_acquire(int lock_reg, int result_reg) override;
+    void emit_lock_try_acquire_timeout(int lock_reg, int timeout_reg, int result_reg) override;
+    
+    // Atomic operations for lock implementation
+    void emit_atomic_compare_exchange(int ptr_reg, int expected_reg, int desired_reg, int result_reg) override;
+    void emit_atomic_fetch_add(int ptr_reg, int value_reg, int result_reg) override;
+    void emit_atomic_store(int ptr_reg, int value_reg, int memory_order) override;
+    void emit_atomic_load(int ptr_reg, int result_reg, int memory_order) override;
+    void emit_memory_fence(int fence_type) override;
     
     std::vector<uint8_t> get_code() const override { return code; }
     void clear() override { code.clear(); label_offsets.clear(); unresolved_jumps.clear(); }

@@ -21,16 +21,22 @@ WorkStealingMarkStack::WorkStealingMarkStack(int num_workers) {
 
 void WorkStealingMarkStack::push_work(int worker_id, void* object, int depth) {
     if (worker_id < 0 || worker_id >= static_cast<int>(worker_queues_.size())) {
-        // Push to overflow queue
-        std::lock_guard<std::mutex> lock(overflow_mutex_);
-        overflow_queue_.push({object, depth});
+        // Push to lockfree overflow queue
+        push_to_overflow_lockfree({object, depth});
         return;
     }
     
     auto& queue = worker_queues_[worker_id];
-    std::lock_guard<std::mutex> lock(queue->mutex);
-    queue->tasks.push({object, depth});
-    queue->has_work.store(true);
+    
+    // Lockfree push to bottom of deque (only owner pushes to bottom)
+    size_t bottom = queue->bottom.load(std::memory_order_relaxed);
+    queue->tasks[bottom & QUEUE_MASK] = {object, depth};
+    
+    // Memory fence to ensure task is written before bottom is updated
+    std::atomic_thread_fence(std::memory_order_release);
+    
+    queue->bottom.store(bottom + 1, std::memory_order_relaxed);
+    queue->has_work.store(true, std::memory_order_relaxed);
 }
 
 bool WorkStealingMarkStack::pop_work(int worker_id, MarkTask& task) {
@@ -39,17 +45,45 @@ bool WorkStealingMarkStack::pop_work(int worker_id, MarkTask& task) {
     }
     
     auto& queue = worker_queues_[worker_id];
-    std::lock_guard<std::mutex> lock(queue->mutex);
     
-    if (!queue->tasks.empty()) {
-        task = queue->tasks.front();
-        queue->tasks.pop();
-        if (queue->tasks.empty()) {
-            queue->has_work.store(false);
-        }
-        return true;
+    // Lockfree pop from bottom (owner only)
+    size_t bottom = queue->bottom.load(std::memory_order_relaxed);
+    if (bottom == 0) {
+        queue->has_work.store(false, std::memory_order_relaxed);
+        return false;
     }
     
+    bottom--;
+    queue->bottom.store(bottom, std::memory_order_relaxed);
+    
+    // Memory fence to ensure bottom is updated before loading task
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    
+    task = queue->tasks[bottom & queue->QUEUE_MASK];
+    
+    size_t top = queue->top.load(std::memory_order_relaxed);
+    
+    if (bottom > top) {
+        // Successfully popped
+        if (bottom == top + 1) {
+            queue->has_work.store(false, std::memory_order_relaxed);
+        }
+        return task.object != nullptr;
+    }
+    
+    if (bottom == top) {
+        // Empty or contention with thief
+        queue->bottom.store(bottom + 1, std::memory_order_relaxed);
+        queue->has_work.store(false, std::memory_order_relaxed);
+        
+        // Try to compete with thief using CAS
+        if (queue->top.compare_exchange_strong(top, top + 1, std::memory_order_seq_cst)) {
+            return task.object != nullptr;
+        }
+    }
+    
+    // Lost race or empty
+    queue->bottom.store(bottom + 1, std::memory_order_relaxed);
     return false;
 }
 
@@ -60,20 +94,14 @@ bool WorkStealingMarkStack::steal_work(int worker_id, MarkTask& task) {
     
     std::vector<int> candidates;
     for (int i = 0; i < static_cast<int>(worker_queues_.size()); ++i) {
-        if (i != worker_id && worker_queues_[i]->has_work.load()) {
+        if (i != worker_id && worker_queues_[i]->has_work.load(std::memory_order_relaxed)) {
             candidates.push_back(i);
         }
     }
     
     if (candidates.empty()) {
-        // Try overflow queue
-        std::lock_guard<std::mutex> lock(overflow_mutex_);
-        if (!overflow_queue_.empty()) {
-            task = overflow_queue_.front();
-            overflow_queue_.pop();
-            return true;
-        }
-        return false;
+        // Try lockfree overflow queue
+        return pop_from_overflow_lockfree(task);
     }
     
     // Randomly pick a victim to steal from
@@ -81,17 +109,30 @@ bool WorkStealingMarkStack::steal_work(int worker_id, MarkTask& task) {
     int victim = candidates[dis(gen)];
     
     auto& queue = worker_queues_[victim];
-    std::lock_guard<std::mutex> lock(queue->mutex);
     
-    if (!queue->tasks.empty()) {
-        task = queue->tasks.front();
-        queue->tasks.pop();
-        if (queue->tasks.empty()) {
-            queue->has_work.store(false);
-        }
-        return true;
+    // Lockfree steal from top
+    size_t top = queue->top.load(std::memory_order_relaxed);
+    
+    // Memory fence to ensure top is loaded before bottom
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    
+    size_t bottom = queue->bottom.load(std::memory_order_relaxed);
+    
+    if (top >= bottom) {
+        // Empty queue
+        return false;
     }
     
+    // Load task before attempting CAS
+    task = queue->tasks[top & queue->QUEUE_MASK];
+    
+    // Try to atomically increment top
+    if (queue->top.compare_exchange_strong(top, top + 1, std::memory_order_seq_cst)) {
+        // Successfully stole work
+        return task.object != nullptr;
+    }
+    
+    // Failed to steal (race with other thieves or owner)
     return false;
 }
 
@@ -100,12 +141,20 @@ bool WorkStealingMarkStack::is_marking_complete() const {
     
     // Check if any worker has work
     for (const auto& queue : worker_queues_) {
-        if (queue->has_work.load()) return false;
+        if (queue->has_work.load(std::memory_order_relaxed)) return false;
     }
     
-    // Check overflow queue
-    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(overflow_mutex_));
-    return overflow_queue_.empty();
+    // Check if overflow queue has work
+    bool overflow_empty = (overflow_head_.load(std::memory_order_relaxed) == nullptr);
+    
+    // If we dropped tasks, we might not be truly complete - warn about this
+    size_t dropped = dropped_tasks_.load(std::memory_order_relaxed);
+    if (dropped > 0 && overflow_empty) {
+        std::cout << "[GC] WARNING: Marking appears complete but " << dropped 
+                  << " tasks were dropped due to overflow\n";
+    }
+    
+    return overflow_empty;
 }
 
 void WorkStealingMarkStack::finish_marking() {
@@ -117,17 +166,106 @@ void WorkStealingMarkStack::reset() {
     active_workers_.store(0);
     
     for (auto& queue : worker_queues_) {
-        std::lock_guard<std::mutex> lock(queue->mutex);
-        while (!queue->tasks.empty()) {
-            queue->tasks.pop();
+        queue->top.store(0, std::memory_order_relaxed);
+        queue->bottom.store(0, std::memory_order_relaxed);
+        queue->has_work.store(false, std::memory_order_relaxed);
+        
+        // Clear task array
+        for (size_t i = 0; i < queue->QUEUE_SIZE; ++i) {
+            queue->tasks[i] = {nullptr, 0};
         }
-        queue->has_work.store(false);
     }
     
-    std::lock_guard<std::mutex> lock(overflow_mutex_);
-    while (!overflow_queue_.empty()) {
-        overflow_queue_.pop();
+    // Clear overflow queue
+    overflow_head_.store(nullptr, std::memory_order_relaxed);
+    overflow_tail_.store(nullptr, std::memory_order_relaxed);
+    overflow_pool_index_.store(0, std::memory_order_relaxed);
+    overflow_queue_size_.store(0, std::memory_order_relaxed);
+    dropped_tasks_.store(0, std::memory_order_relaxed);
+}
+
+// Lock-free overflow queue implementation with size limit
+void WorkStealingMarkStack::push_to_overflow_lockfree(const MarkTask& task) {
+    // Check if overflow queue is already too large
+    size_t current_size = overflow_queue_size_.load(std::memory_order_relaxed);
+    if (current_size >= MAX_OVERFLOW_SIZE) {
+        // Drop the task to prevent unbounded growth
+        dropped_tasks_.fetch_add(1, std::memory_order_relaxed);
+        
+        // Log warning periodically (every 1000 drops)
+        if (dropped_tasks_.load() % 1000 == 0) {
+            std::cerr << "[GC] WARNING: Overflow queue full, dropped " 
+                      << dropped_tasks_.load() << " marking tasks\n";
+        }
+        return;
     }
+    
+    OverflowNode* node = allocate_overflow_node();
+    if (!node) {
+        // Pool exhausted, drop task
+        dropped_tasks_.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    
+    node->task = task;
+    node->next.store(nullptr, std::memory_order_relaxed);
+    
+    // Atomically add to tail of linked list
+    OverflowNode* prev_tail = overflow_tail_.exchange(node, std::memory_order_acq_rel);
+    
+    if (prev_tail) {
+        prev_tail->next.store(node, std::memory_order_release);
+    } else {
+        // First node in list
+        overflow_head_.store(node, std::memory_order_release);
+    }
+    
+    // Update size counter
+    overflow_queue_size_.fetch_add(1, std::memory_order_relaxed);
+}
+
+bool WorkStealingMarkStack::pop_from_overflow_lockfree(MarkTask& task) {
+    OverflowNode* head = overflow_head_.load(std::memory_order_acquire);
+    
+    while (head) {
+        OverflowNode* next = head->next.load(std::memory_order_relaxed);
+        
+        // Try to atomically move head forward
+        if (overflow_head_.compare_exchange_weak(head, next, 
+                                                std::memory_order_acq_rel,
+                                                std::memory_order_acquire)) {
+            // Successfully dequeued
+            task = head->task;
+            
+            // Update tail if we removed the last node
+            if (!next) {
+                OverflowNode* expected_tail = head;
+                overflow_tail_.compare_exchange_strong(expected_tail, nullptr,
+                                                     std::memory_order_acq_rel);
+            }
+            
+            // Update size counter
+            overflow_queue_size_.fetch_sub(1, std::memory_order_relaxed);
+            
+            return true;
+        }
+        // head was updated by CAS failure, retry
+    }
+    
+    return false; // Queue was empty
+}
+
+WorkStealingMarkStack::OverflowNode* WorkStealingMarkStack::allocate_overflow_node() {
+    size_t index = overflow_pool_index_.fetch_add(1, std::memory_order_relaxed);
+    
+    if (index < OVERFLOW_POOL_SIZE) {
+        OverflowNode* node = &overflow_pool_[index];
+        node->next.store(nullptr, std::memory_order_relaxed);
+        return node;
+    }
+    
+    // Pool exhausted - could allocate dynamically but for now return null
+    return nullptr;
 }
 
 // ============================================================================

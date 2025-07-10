@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstring>
 
+
 namespace gots {
 
 // ============================================================================
@@ -60,6 +61,22 @@ void ThreadLocalCleanup::cleanup_thread() {
     auto thread_id = std::this_thread::get_id();
     
     std::cout << "DEBUG: Cleaning up thread GC resources\n";
+    
+    // Clean up thread root cleanup first
+    void* root_cleanup_ptr = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(thread_data_mutex_);
+        auto it = thread_data_.find(thread_id);
+        if (it != thread_data_.end()) {
+            root_cleanup_ptr = it->second.root_cleanup;
+        }
+    }
+    
+    if (root_cleanup_ptr) {
+        // Note: The ThreadRootCleanup destructor will handle cleanup automatically
+        // We don't delete it here as it's managed by thread_local storage
+        std::cout << "DEBUG: Thread root cleanup will be handled by thread_local destructor\n";
+    }
     
     // Clean up TLAB
     TLABCleanup::cleanup_current_tlab();

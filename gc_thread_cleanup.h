@@ -11,6 +11,7 @@ namespace gots {
 class TLAB;
 class GarbageCollector;
 
+
 // ============================================================================
 // THREAD LOCAL CLEANUP - Manages thread-local GC resources
 // ============================================================================
@@ -21,6 +22,7 @@ private:
         TLAB* tlab = nullptr;
         bool escape_data_initialized = false;
         std::thread::id thread_id;
+        void* root_cleanup = nullptr; // Will be cast to GarbageCollector::ThreadRootCleanup*
     };
     
     static std::unordered_map<std::thread::id, ThreadData> thread_data_;

@@ -1,6 +1,7 @@
 #include "runtime_syscalls.h"
 #include "runtime.h"
 #include "runtime_object.h"
+#include "lock_system.h"
 
 // Forward declarations for new goroutine system
 extern "C" {
@@ -1702,6 +1703,85 @@ void* __runtime_vm_run_in_this_context(const char* code) {
     return __runtime_eval(code);
 }
 
+// Global storage for managed Lock objects
+namespace {
+    std::vector<std::shared_ptr<Lock>> managed_locks;
+    std::mutex locks_mutex;
+}
+
+// Lock syscalls - thread-safe locking primitives
+void* __runtime_lock_create() {
+    // Create a new Lock object and store it in managed storage
+    try {
+        std::lock_guard<std::mutex> guard(locks_mutex);
+        auto lock = LockFactory::create_lock();
+        void* raw_ptr = lock.get();
+        managed_locks.push_back(lock);
+        return raw_ptr; // Return raw pointer for runtime use
+    } catch (const std::exception& e) {
+        std::cerr << "Error creating lock: " << e.what() << std::endl;
+        return nullptr;
+    }
+}
+
+void __runtime_lock_lock(void* lock_ptr) {
+    if (!lock_ptr) return;
+    
+    try {
+        auto* lock = static_cast<Lock*>(lock_ptr);
+        lock->lock();
+    } catch (const std::exception& e) {
+        std::cerr << "Error locking: " << e.what() << std::endl;
+    }
+}
+
+void __runtime_lock_unlock(void* lock_ptr) {
+    if (!lock_ptr) return;
+    
+    try {
+        auto* lock = static_cast<Lock*>(lock_ptr);
+        lock->unlock();
+    } catch (const std::exception& e) {
+        std::cerr << "Error unlocking: " << e.what() << std::endl;
+    }
+}
+
+bool __runtime_lock_try_lock(void* lock_ptr) {
+    if (!lock_ptr) return false;
+    
+    try {
+        auto* lock = static_cast<Lock*>(lock_ptr);
+        return lock->try_lock();
+    } catch (const std::exception& e) {
+        std::cerr << "Error trying lock: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+bool __runtime_lock_try_lock_for(void* lock_ptr, int64_t timeout_ms) {
+    if (!lock_ptr) return false;
+    
+    try {
+        auto* lock = static_cast<Lock*>(lock_ptr);
+        return lock->try_lock_for(std::chrono::milliseconds(timeout_ms));
+    } catch (const std::exception& e) {
+        std::cerr << "Error trying lock with timeout: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+bool __runtime_lock_is_locked_by_current(void* lock_ptr) {
+    if (!lock_ptr) return false;
+    
+    try {
+        auto* lock = static_cast<Lock*>(lock_ptr);
+        return lock->is_locked_by_current();
+    } catch (const std::exception& e) {
+        std::cerr << "Error checking lock ownership: " << e.what() << std::endl;
+        return false;
+    }
+}
+
 // Additional runtime functions for GoTS-specific features
 void* __runtime_go_spawn(void* func, void* args) {
     // Spawn goroutine
@@ -1753,6 +1833,14 @@ void* __runtime_jit_stats() {
 void __runtime_jit_optimize(void* func) {
     // Optimize function
 }
+
+// Lock syscalls
+void* __runtime_lock_create();
+void __runtime_lock_lock(void* lock_ptr);
+void __runtime_lock_unlock(void* lock_ptr);
+bool __runtime_lock_try_lock(void* lock_ptr);
+bool __runtime_lock_try_lock_for(void* lock_ptr, int64_t timeout_ms);
+bool __runtime_lock_is_locked_by_current(void* lock_ptr);
 
 } // extern "C"
 
@@ -1809,11 +1897,15 @@ void initialize_runtime_object() {
     global_runtime->os.freemem = reinterpret_cast<void*>(__runtime_os_freemem);
     global_runtime->os.totalmem = reinterpret_cast<void*>(__runtime_os_totalmem);
     
+    // Initialize lock object function pointers
+    global_runtime->lock.create = reinterpret_cast<void*>(__runtime_lock_create);
+    
     // Register all methods for JIT optimization
     runtime_method_registry["time.now"] = {"time.now", global_runtime->time.now_millis, false, 0};
     runtime_method_registry["time.nowNanos"] = {"time.nowNanos", global_runtime->time.now_nanos, false, 0};
     runtime_method_registry["process.pid"] = {"process.pid", global_runtime->process.pid, false, 0};
     runtime_method_registry["process.cwd"] = {"process.cwd", global_runtime->process.cwd, false, 0};
+    runtime_method_registry["lock.create"] = {"lock.create", global_runtime->lock.create, false, 0};
     // Add more as needed...
 }
 
@@ -1878,6 +1970,14 @@ void __runtime_register_global() {
     // Timer functions
     __register_function_fast(reinterpret_cast<void*>(__runtime_timer_set_timeout), 2, 0);
     __register_function_fast(reinterpret_cast<void*>(__runtime_timer_clear_timeout), 1, 0);
+    
+    // Lock functions
+    __register_function_fast(reinterpret_cast<void*>(__runtime_lock_create), 0, 0);
+    __register_function_fast(reinterpret_cast<void*>(__runtime_lock_lock), 1, 0);
+    __register_function_fast(reinterpret_cast<void*>(__runtime_lock_unlock), 1, 0);
+    __register_function_fast(reinterpret_cast<void*>(__runtime_lock_try_lock), 1, 0);
+    __register_function_fast(reinterpret_cast<void*>(__runtime_lock_try_lock_for), 2, 0);
+    __register_function_fast(reinterpret_cast<void*>(__runtime_lock_is_locked_by_current), 1, 0);
     
     // Math functions
     __register_function_fast(reinterpret_cast<void*>(__runtime_math_random), 0, 0);

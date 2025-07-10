@@ -24,7 +24,6 @@ struct VariableBinding {
     std::atomic<bool> is_initialized{false};
     std::atomic<bool> is_mutable{true};
     std::atomic<bool> has_been_set{false};
-    std::atomic<int64_t> ref_count{1};
     mutable std::shared_mutex access_mutex;
     
     // Type information for runtime casting
@@ -86,19 +85,56 @@ struct VariableBinding {
         return *static_cast<T*>(ptr);
     }
     
-    // Atomic reference counting for goroutine safety
-    void add_ref() {
-        ref_count.fetch_add(1, std::memory_order_relaxed);
-    }
-    
-    void release() {
-        if (ref_count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-            delete this;
-        }
-    }
+    // Note: Memory managed by GC, no manual reference counting needed
 
 private:
-    void cleanup_value(void* ptr, DataType type);
+    void cleanup_value(void* ptr, DataType type) {
+        if (!ptr) return;
+        
+        switch (type) {
+            case DataType::STRING:
+                delete static_cast<std::string*>(ptr);
+                break;
+            case DataType::INT8:
+                delete static_cast<int8_t*>(ptr);
+                break;
+            case DataType::INT16:
+                delete static_cast<int16_t*>(ptr);
+                break;
+            case DataType::INT32:
+                delete static_cast<int32_t*>(ptr);
+                break;
+            case DataType::INT64:
+                delete static_cast<int64_t*>(ptr);
+                break;
+            case DataType::UINT8:
+                delete static_cast<uint8_t*>(ptr);
+                break;
+            case DataType::UINT16:
+                delete static_cast<uint16_t*>(ptr);
+                break;
+            case DataType::UINT32:
+                delete static_cast<uint32_t*>(ptr);
+                break;
+            case DataType::UINT64:
+                delete static_cast<uint64_t*>(ptr);
+                break;
+            case DataType::FLOAT32:
+                delete static_cast<float*>(ptr);
+                break;
+            case DataType::FLOAT64:
+                delete static_cast<double*>(ptr);
+                break;
+            case DataType::BOOLEAN:
+                delete static_cast<bool*>(ptr);
+                break;
+            default:
+                // For unknown types, assume it's a generic pointer that should be deleted
+                // In a full GC system, this would be handled by the garbage collector
+                delete static_cast<char*>(ptr);
+                break;
+        }
+    }
     
     template<typename T>
     constexpr DataType get_data_type() const {
@@ -128,8 +164,6 @@ private:
     std::shared_ptr<LexicalScope> parent_scope;
     mutable std::shared_mutex scope_mutex;
     std::atomic<uint64_t> scope_id;
-    std::atomic<int64_t> ref_count{1};
-    
     static std::atomic<uint64_t> next_scope_id;
 
 public:
@@ -167,16 +201,7 @@ public:
     std::shared_ptr<LexicalScope> get_parent() const { return parent_scope; }
     uint64_t get_id() const { return scope_id.load(); }
     
-    // Reference counting for thread safety
-    void add_ref() {
-        ref_count.fetch_add(1, std::memory_order_relaxed);
-    }
-    
-    void release() {
-        if (ref_count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-            delete this;
-        }
-    }
+    // Note: Memory managed by GC, no manual reference counting needed
     
     // Closure capture - creates a reference to current scope for goroutines (NOT a snapshot)
     // This allows goroutines to access and modify variables from their lexical environment

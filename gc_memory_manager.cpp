@@ -9,6 +9,7 @@
 #include <cassert>
 #include <cstring>
 #include <chrono>
+#include <deque>
 
 namespace gots {
 
@@ -18,16 +19,156 @@ namespace gots {
 
 static GarbageCollector* g_gc_instance = nullptr;
 thread_local TLAB* GenerationalHeap::tlab_ = nullptr;
+thread_local GarbageCollector::ThreadRootCleanup* GarbageCollector::thread_root_cleanup_ = nullptr;
+thread_local int GarbageCollector::thread_deque_index_ = -1;
 uint8_t* WriteBarrier::card_table_ = nullptr;
 size_t WriteBarrier::card_table_size_ = 0;
 
-// Thread-local escape analysis data
+// Thread-local escape analysis data with bounded cache and LRU eviction
 thread_local struct {
     std::vector<std::pair<size_t, size_t>> scope_stack; // (scope_id, depth)
     std::unordered_map<size_t, EscapeAnalyzer::AnalysisResult> allocation_sites;
     std::unordered_map<size_t, std::vector<size_t>> var_to_sites;
     std::unordered_map<size_t, size_t> var_scope;
+    
+    // LRU tracking for allocation sites
+    std::unordered_map<size_t, size_t> site_access_time;
+    std::unordered_map<size_t, size_t> var_access_time;
+    
     size_t current_scope = 0;
+    size_t access_counter = 0;
+    
+    static constexpr size_t MAX_ALLOCATION_SITES = 5000;  // Reduced limit
+    static constexpr size_t MAX_VARIABLES = 2000;         // Limit variables too
+    static constexpr size_t CLEANUP_THRESHOLD = 500;      // More frequent cleanup
+    static constexpr size_t FORCE_CLEANUP_THRESHOLD = 100; // Force cleanup interval
+    
+    void cleanup_old_data() {
+        access_counter++;
+        
+        // Force periodic cleanup even if under limits
+        bool force_cleanup = (access_counter % FORCE_CLEANUP_THRESHOLD == 0);
+        
+        if (!force_cleanup && allocation_sites.size() < MAX_ALLOCATION_SITES && 
+            var_to_sites.size() < MAX_VARIABLES) {
+            return;
+        }
+        
+        size_t cleaned_sites = 0;
+        size_t cleaned_vars = 0;
+        
+        // First, remove variables no longer in scope
+        std::vector<size_t> vars_to_remove;
+        for (const auto& [var_id, scope_id] : var_scope) {
+            bool in_current_scope = false;
+            for (const auto& [sid, depth] : scope_stack) {
+                if (sid == scope_id) {
+                    in_current_scope = true;
+                    break;
+                }
+            }
+            if (!in_current_scope) {
+                vars_to_remove.push_back(var_id);
+            }
+        }
+        
+        // Remove out-of-scope variables and their sites
+        for (size_t var_id : vars_to_remove) {
+            auto it = var_to_sites.find(var_id);
+            if (it != var_to_sites.end()) {
+                for (size_t site : it->second) {
+                    allocation_sites.erase(site);
+                    site_access_time.erase(site);
+                    cleaned_sites++;
+                }
+                var_to_sites.erase(it);
+                cleaned_vars++;
+            }
+            var_scope.erase(var_id);
+            var_access_time.erase(var_id);
+        }
+        
+        // If still over limits, do LRU eviction
+        if (allocation_sites.size() > MAX_ALLOCATION_SITES || force_cleanup) {
+            evict_lru_allocation_sites();
+        }
+        
+        if (var_to_sites.size() > MAX_VARIABLES || force_cleanup) {
+            evict_lru_variables();
+        }
+        
+        if (cleaned_sites > 0 || cleaned_vars > 0) {
+            std::cout << "[GC] Escape analysis cleanup: removed " << cleaned_sites 
+                      << " sites, " << cleaned_vars << " variables\n";
+        }
+    }
+    
+    void evict_lru_allocation_sites() {
+        if (allocation_sites.size() <= MAX_ALLOCATION_SITES / 2) return;
+        
+        // Build vector of (site_id, last_access_time) and sort by access time
+        std::vector<std::pair<size_t, size_t>> sites_by_time;
+        for (const auto& [site_id, _] : allocation_sites) {
+            size_t last_access = site_access_time.count(site_id) ? 
+                                site_access_time[site_id] : 0;
+            sites_by_time.emplace_back(site_id, last_access);
+        }
+        
+        // Sort by access time (oldest first)
+        std::sort(sites_by_time.begin(), sites_by_time.end(),
+                 [](const auto& a, const auto& b) { return a.second < b.second; });
+        
+        // Remove oldest half
+        size_t to_remove = allocation_sites.size() / 2;
+        for (size_t i = 0; i < to_remove && i < sites_by_time.size(); ++i) {
+            size_t site_id = sites_by_time[i].first;
+            allocation_sites.erase(site_id);
+            site_access_time.erase(site_id);
+        }
+    }
+    
+    void evict_lru_variables() {
+        if (var_to_sites.size() <= MAX_VARIABLES / 2) return;
+        
+        // Build vector of (var_id, last_access_time)
+        std::vector<std::pair<size_t, size_t>> vars_by_time;
+        for (const auto& [var_id, _] : var_to_sites) {
+            size_t last_access = var_access_time.count(var_id) ? 
+                                var_access_time[var_id] : 0;
+            vars_by_time.emplace_back(var_id, last_access);
+        }
+        
+        // Sort by access time (oldest first)
+        std::sort(vars_by_time.begin(), vars_by_time.end(),
+                 [](const auto& a, const auto& b) { return a.second < b.second; });
+        
+        // Remove oldest third
+        size_t to_remove = var_to_sites.size() / 3;
+        for (size_t i = 0; i < to_remove && i < vars_by_time.size(); ++i) {
+            size_t var_id = vars_by_time[i].first;
+            
+            // Remove all allocation sites for this variable
+            auto it = var_to_sites.find(var_id);
+            if (it != var_to_sites.end()) {
+                for (size_t site : it->second) {
+                    allocation_sites.erase(site);
+                    site_access_time.erase(site);
+                }
+                var_to_sites.erase(it);
+            }
+            var_scope.erase(var_id);
+            var_access_time.erase(var_id);
+        }
+    }
+    
+    void touch_allocation_site(size_t site_id) {
+        site_access_time[site_id] = access_counter;
+    }
+    
+    void touch_variable(size_t var_id) {
+        var_access_time[var_id] = access_counter;
+    }
+    
 } g_escape_data;
 
 // ============================================================================
@@ -42,6 +183,11 @@ EscapeAnalyzer::AnalysisResult EscapeAnalyzer::analyze_allocation(
 ) {
     AnalysisResult result;
     
+    // Periodic cleanup
+    if (++g_escape_data.access_counter % g_escape_data.CLEANUP_THRESHOLD == 0) {
+        g_escape_data.cleanup_old_data();
+    }
+    
     // Check size constraints
     if (allocation_size > GCConfig::MAX_STACK_ALLOC_SIZE) {
         result.size_too_large = true;
@@ -51,6 +197,7 @@ EscapeAnalyzer::AnalysisResult EscapeAnalyzer::analyze_allocation(
     // Check if we have analysis data for this site
     auto it = g_escape_data.allocation_sites.find(allocation_site);
     if (it != g_escape_data.allocation_sites.end()) {
+        g_escape_data.touch_allocation_site(allocation_site);
         return it->second;
     }
     
@@ -76,6 +223,7 @@ void EscapeAnalyzer::register_scope_exit(size_t scope_id) {
 void EscapeAnalyzer::register_variable_def(size_t var_id, size_t scope_id, size_t allocation_site) {
     g_escape_data.var_to_sites[var_id].push_back(allocation_site);
     g_escape_data.var_scope[var_id] = scope_id;
+    g_escape_data.touch_variable(var_id);
     
     // Initialize analysis for this allocation site
     if (g_escape_data.allocation_sites.find(allocation_site) == g_escape_data.allocation_sites.end()) {
@@ -83,6 +231,7 @@ void EscapeAnalyzer::register_variable_def(size_t var_id, size_t scope_id, size_
         result.max_lifetime_scope = scope_id;
         result.can_stack_allocate = true; // Optimistic
         g_escape_data.allocation_sites[allocation_site] = result;
+        g_escape_data.touch_allocation_site(allocation_site);
     }
 }
 
@@ -192,32 +341,41 @@ void GenerationalHeap::shutdown() {
 }
 
 void* GenerationalHeap::allocate_slow(size_t size, uint32_t type_id, bool is_array) {
-    // Get or create TLAB for this thread
-    if (!tlab_) {
+    // Get or create TLAB for this thread with double-checked locking
+    TLAB* local_tlab = tlab_;
+    if (!local_tlab) {
         std::lock_guard<std::mutex> lock(GarbageCollector::instance().tlabs_mutex_);
         
-        // Allocate new TLAB from eden
-        if (young_.eden_current + GCConfig::TLAB_SIZE <= young_.eden_end) {
-            auto new_tlab = std::make_unique<TLAB>(
-                young_.eden_current, 
-                GCConfig::TLAB_SIZE,
-                std::hash<std::thread::id>{}(std::this_thread::get_id())
-            );
-            
-            young_.eden_current += GCConfig::TLAB_SIZE;
-            tlab_ = new_tlab.get();
-            GarbageCollector::instance().all_tlabs_.push_back(std::move(new_tlab));
-        } else {
-            // Eden full, trigger GC
-            GarbageCollector::instance().request_gc(false);
-            
-            // Retry after GC
+        // Double-check after acquiring lock
+        local_tlab = tlab_;
+        if (!local_tlab) {
+            // Allocate new TLAB from eden
             if (young_.eden_current + GCConfig::TLAB_SIZE <= young_.eden_end) {
-                return allocate_slow(size, type_id, is_array);
+                auto new_tlab = std::make_unique<TLAB>(
+                    young_.eden_current, 
+                    GCConfig::TLAB_SIZE,
+                    std::hash<std::thread::id>{}(std::this_thread::get_id())
+                );
+                
+                young_.eden_current += GCConfig::TLAB_SIZE;
+                local_tlab = new_tlab.get();
+                GarbageCollector::instance().all_tlabs_.push_back(std::move(new_tlab));
+                
+                // Use atomic store to ensure visibility
+                std::atomic_thread_fence(std::memory_order_release);
+                tlab_ = local_tlab;
+            } else {
+                // Eden full, trigger GC
+                GarbageCollector::instance().request_gc(false);
+                
+                // Retry after GC
+                if (young_.eden_current + GCConfig::TLAB_SIZE <= young_.eden_end) {
+                    return allocate_slow(size, type_id, is_array);
+                }
+                
+                // Still no space, allocate directly in old gen
+                return allocate_large_slow(size, type_id, is_array);
             }
-            
-            // Still no space, allocate directly in old gen
-            return allocate_large_slow(size, type_id, is_array);
         }
     }
     
@@ -245,7 +403,7 @@ void* GenerationalHeap::allocate_large_slow(size_t size, uint32_t type_id, bool 
         header->size = size;
         header->flags = ObjectHeader::IN_OLD_GEN;
         header->type_id = type_id;
-        header->forward_ptr = 0;
+        header->forward_ptr = nullptr;
         if (is_array) header->flags |= ObjectHeader::IS_ARRAY;
         
         return header->get_object_start();
@@ -269,6 +427,13 @@ void* GenerationalHeap::allocate_large_slow(size_t size, uint32_t type_id, bool 
 
 GarbageCollector::GarbageCollector() {
     heap_.initialize();
+    
+    // Initialize work-stealing deques based on hardware concurrency
+    int num_deques = std::thread::hardware_concurrency();
+    mark_deques_.reserve(num_deques);
+    for (int i = 0; i < num_deques; ++i) {
+        mark_deques_.push_back(std::make_unique<MarkDeque>());
+    }
 }
 
 GarbageCollector::~GarbageCollector() {
@@ -415,15 +580,56 @@ void GarbageCollector::mark_object(void* obj) {
     // Mark it
     header->set_marked(true);
     
-    // Add to mark stack for processing
-    mark_stack_.push(obj);
+    // Add to thread-local deque for processing
+    int deque_idx = get_thread_deque_index();
+    auto& deque = mark_deques_[deque_idx];
+    {
+        std::lock_guard<std::mutex> lock(deque->mutex);
+        deque->deque.push_back(obj);
+        deque->size.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 void GarbageCollector::process_mark_stack() {
-    while (!mark_stack_.empty()) {
-        void* obj = mark_stack_.top();
-        mark_stack_.pop();
+    int deque_idx = get_thread_deque_index();
+    process_mark_deque(deque_idx);
+}
+
+void GarbageCollector::process_mark_deque(int deque_index) {
+    auto& my_deque = mark_deques_[deque_index];
+    int steal_attempts = 0;
+    const int max_steal_attempts = mark_deques_.size() * 2;
+    
+    while (true) {
+        void* obj = nullptr;
         
+        // Try to get work from own deque
+        {
+            std::lock_guard<std::mutex> lock(my_deque->mutex);
+            if (!my_deque->deque.empty()) {
+                obj = my_deque->deque.back();
+                my_deque->deque.pop_back();
+                my_deque->size.fetch_sub(1, std::memory_order_relaxed);
+            }
+        }
+        
+        // If no work, try to steal from others
+        if (!obj && steal_attempts < max_steal_attempts) {
+            steal_attempts++;
+            for (size_t i = 0; i < mark_deques_.size(); ++i) {
+                if (i != deque_index && steal_work(i, obj)) {
+                    steal_attempts = 0;  // Reset on successful steal
+                    break;
+                }
+            }
+        }
+        
+        // If still no work, we're done
+        if (!obj) {
+            break;
+        }
+        
+        // Process the object
         ObjectHeader* header = reinterpret_cast<ObjectHeader*>(
             static_cast<uint8_t*>(obj) - sizeof(ObjectHeader)
         );
@@ -440,6 +646,32 @@ void GarbageCollector::process_mark_stack() {
             if (*field) mark_object(*field);
         }
     }
+}
+
+bool GarbageCollector::steal_work(int from_deque, void*& obj) {
+    auto& deque = mark_deques_[from_deque];
+    
+    // Only steal if they have enough work
+    if (deque->size.load(std::memory_order_relaxed) < 2) {
+        return false;
+    }
+    
+    std::lock_guard<std::mutex> lock(deque->mutex);
+    if (!deque->deque.empty()) {
+        // Steal from front (opposite end from owner)
+        obj = deque->deque.front();
+        deque->deque.pop_front();
+        deque->size.fetch_sub(1, std::memory_order_relaxed);
+        return true;
+    }
+    return false;
+}
+
+int GarbageCollector::get_thread_deque_index() {
+    if (thread_deque_index_ == -1) {
+        thread_deque_index_ = next_deque_.fetch_add(1) % mark_deques_.size();
+    }
+    return thread_deque_index_;
 }
 
 // Copy survivors from young generation
@@ -464,6 +696,20 @@ void GarbageCollector::copy_young_survivors() {
             break;
         }
         
+        // Validate object header integrity
+        if (header->type_id == 0 || header->type_id > 10000) {
+            std::cerr << "ERROR: Invalid type_id " << header->type_id << " at " << scan << "\n";
+            break;
+        }
+        
+        // Validate object flags
+        if ((header->flags & ~(ObjectHeader::IS_MARKED | ObjectHeader::IS_ARRAY | 
+                              ObjectHeader::IN_OLD_GEN | ObjectHeader::STACK_ALLOCATED)) != 0) {
+            std::cerr << "ERROR: Invalid object flags " << std::hex << header->flags 
+                      << " at " << scan << "\n";
+            break;
+        }
+        
         // Calculate next object position with overflow check
         size_t total_object_size = sizeof(ObjectHeader) + header->size;
         
@@ -483,7 +729,7 @@ void GarbageCollector::copy_young_survivors() {
             // Promote to old generation
             void* new_location = copy_object(header->get_object_start(), true);
             if (new_location) {
-                header->forward_ptr = reinterpret_cast<uintptr_t>(new_location) & 0xFFFF;
+                header->forward_ptr = new_location;
             }
         }
         
@@ -533,8 +779,8 @@ void GarbageCollector::update_references() {
             ObjectHeader* header = reinterpret_cast<ObjectHeader*>(
                 static_cast<uint8_t*>(*ref_ptr) - sizeof(ObjectHeader)
             );
-            if (header->forward_ptr != 0) {
-                *ref_ptr = reinterpret_cast<void*>(header->forward_ptr);
+            if (header->forward_ptr != nullptr) {
+                *ref_ptr = header->forward_ptr;
             }
         }
     };
@@ -571,8 +817,36 @@ void GarbageCollector::safepoint_slow() {
 
 // Root management
 void GarbageCollector::add_stack_root(void** root) {
+    // Initialize thread-local cleanup if needed
+    if (!thread_root_cleanup_) {
+        thread_root_cleanup_ = new ThreadRootCleanup(this);
+        
+        // Register with global thread cleanup system
+        ThreadLocalCleanup::register_thread();
+        
+        // Add this cleanup to the thread's cleanup list
+        auto* thread_data = ThreadLocalCleanup::get_thread_data();
+        if (thread_data) {
+            thread_data->root_cleanup = static_cast<void*>(thread_root_cleanup_);
+        }
+        
+        // Register cleanup callback for thread exit
+        register_thread_cleanup_callback([](void* arg) {
+            auto* cleanup = static_cast<ThreadRootCleanup*>(arg);
+            if (cleanup) {
+                cleanup->cleanup_all_roots();
+                delete cleanup;
+            }
+        }, thread_root_cleanup_);
+    }
+    
     std::lock_guard<std::mutex> lock(roots_.roots_mutex);
     roots_.stack_roots.push_back(root);
+    
+    // Also add to thread-local cleanup tracking
+    if (thread_root_cleanup_) {
+        thread_root_cleanup_->add_root(root);
+    }
 }
 
 void GarbageCollector::remove_stack_root(void** root) {
@@ -580,6 +854,11 @@ void GarbageCollector::remove_stack_root(void** root) {
     auto it = std::find(roots_.stack_roots.begin(), roots_.stack_roots.end(), root);
     if (it != roots_.stack_roots.end()) {
         roots_.stack_roots.erase(it);
+    }
+    
+    // Also remove from thread-local cleanup tracking
+    if (thread_root_cleanup_) {
+        thread_root_cleanup_->remove_root(root);
     }
 }
 
@@ -609,6 +888,10 @@ void GarbageCollector::perform_old_gc() {
     current_phase_.store(Phase::MARKING);
     mark_roots();
     process_mark_stack();
+    
+    // Compact memory and decommit unused pages
+    decommit_old_generation_tail();
+    
     release_safepoint();
     current_phase_.store(Phase::IDLE);
     
@@ -684,6 +967,44 @@ size_t GenerationalHeap::total_allocated() const {
     return young_used() + old_used();
 }
 
+void GenerationalHeap::decommit_unused_memory() {
+    // Calculate unused memory at the end of old generation
+    size_t old_size_used = old_used();
+    size_t old_total_size = old_.end - old_.start;
+    size_t unused_size = old_total_size - old_size_used;
+    
+    // Only decommit if we have significant unused memory (at least 1MB)
+    const size_t MIN_DECOMMIT_SIZE = 1024 * 1024;
+    if (unused_size < MIN_DECOMMIT_SIZE) {
+        return;
+    }
+    
+    // Round down to page boundary
+    size_t page_size = 4096;
+    size_t decommit_start = reinterpret_cast<uintptr_t>(old_.current);
+    decommit_start = (decommit_start + page_size - 1) & ~(page_size - 1);
+    
+    size_t decommit_end = reinterpret_cast<uintptr_t>(old_.end);
+    
+    if (decommit_start < decommit_end) {
+        // Use madvise to tell the OS it can reclaim these pages
+        void* addr = reinterpret_cast<void*>(decommit_start);
+        size_t len = decommit_end - decommit_start;
+        
+        if (madvise(addr, len, MADV_DONTNEED) == 0) {
+            // Successfully decommitted memory
+            // Note: The virtual address space is still reserved, but physical
+            // memory can be reclaimed by the OS
+        }
+    }
+}
+
+size_t GenerationalHeap::get_unused_memory() const {
+    size_t young_unused = (young_.eden_end - young_.eden_current);
+    size_t old_unused = (old_.end - old_.current);
+    return young_unused + old_unused;
+}
+
 // ============================================================================
 // C API IMPLEMENTATION
 // ============================================================================
@@ -714,15 +1035,25 @@ void __gc_safepoint() {
 
 void __gc_register_roots(void** roots, size_t count) {
     auto& gc = GarbageCollector::instance();
+    // Use thread-local cleanup to ensure automatic cleanup
+    if (!GarbageCollector::thread_root_cleanup_) {
+        GarbageCollector::thread_root_cleanup_ = new GarbageCollector::ThreadRootCleanup(&gc);
+        register_thread_cleanup_callback([](void* arg) {
+            auto* cleanup = static_cast<GarbageCollector::ThreadRootCleanup*>(arg);
+            delete cleanup;
+        }, GarbageCollector::thread_root_cleanup_);
+    }
+    
     for (size_t i = 0; i < count; ++i) {
-        gc.add_stack_root(&roots[i]);
+        GarbageCollector::thread_root_cleanup_->add_root(&roots[i]);
     }
 }
 
 void __gc_unregister_roots(void** roots, size_t count) {
-    auto& gc = GarbageCollector::instance();
-    for (size_t i = 0; i < count; ++i) {
-        gc.remove_stack_root(&roots[i]);
+    if (GarbageCollector::thread_root_cleanup_) {
+        for (size_t i = 0; i < count; ++i) {
+            GarbageCollector::thread_root_cleanup_->remove_root(&roots[i]);
+        }
     }
 }
 
@@ -747,22 +1078,97 @@ void __gc_register_type(uint32_t type_id, size_t size, void* vtable,
 // ============================================================================
 
 void WriteBarrier::scan_dirty_cards(std::function<void(void*, void*)> callback) {
-    OptimizedWriteBarrier::scan_dirty_cards_simd([&callback](uintptr_t card_start) {
+    auto& gc = GarbageCollector::instance();
+    auto& heap = gc.heap_;
+    
+    OptimizedWriteBarrier::scan_dirty_cards_simd([&callback, &heap](uintptr_t card_start) {
         uintptr_t card_end = card_start + GCConfig::CARD_SIZE;
         
-        // Walk objects in card (simplified - real implementation needs object map)
-        for (uintptr_t addr = card_start; addr < card_end; ) {
+        // Only scan if card is in old generation range
+        if (card_start < reinterpret_cast<uintptr_t>(heap.old_.start) ||
+            card_start >= reinterpret_cast<uintptr_t>(heap.old_.current)) {
+            return;
+        }
+        
+        // Walk objects in card with proper bounds checking
+        uintptr_t addr = card_start;
+        while (addr < card_end && addr < reinterpret_cast<uintptr_t>(heap.old_.current)) {
+            // Ensure we have space for header
+            if (addr + sizeof(ObjectHeader) > reinterpret_cast<uintptr_t>(heap.old_.current)) {
+                break;
+            }
+            
             ObjectHeader* header = reinterpret_cast<ObjectHeader*>(addr);
+            
+            // Validate header
+            if (header->size == 0 || header->size > GCConfig::OLD_GEN_SIZE) {
+                break; // Invalid object, stop scanning this card
+            }
+            
             if (header->flags & ObjectHeader::IN_OLD_GEN) {
                 callback(header->get_object_start(), nullptr);
             }
-            addr += sizeof(ObjectHeader) + header->size;
+            
+            // Move to next object with alignment
+            size_t total_size = sizeof(ObjectHeader) + header->size;
+            total_size = (total_size + GCConfig::OBJECT_ALIGNMENT - 1) & ~(GCConfig::OBJECT_ALIGNMENT - 1);
+            addr += total_size;
         }
     });
 }
 
 void WriteBarrier::clear_cards() {
+    // Clear the entire card table
+    if (card_table_ && card_table_size_ > 0) {
+        memset(card_table_, 0, card_table_size_);
+    }
     OptimizedWriteBarrier::clear_cards_batch();
+}
+
+void GarbageCollector::decommit_old_generation_tail() {
+    // Compact memory by finding highest used address
+    uint8_t* highest_used = heap_.old_.start;
+    
+    // Scan old generation to find highest live object
+    uint8_t* scan = heap_.old_.start;
+    while (scan < heap_.old_.current) {
+        if (scan + sizeof(ObjectHeader) > heap_.old_.current) {
+            break;
+        }
+        
+        ObjectHeader* header = reinterpret_cast<ObjectHeader*>(scan);
+        
+        // Validate header
+        if (header->size == 0 || header->size > GCConfig::OLD_GEN_SIZE) {
+            break;
+        }
+        
+        if (header->is_marked()) {
+            // This object is live, update highest used
+            highest_used = scan + sizeof(ObjectHeader) + header->size;
+        }
+        
+        // Clear mark bit for next GC
+        header->set_marked(false);
+        
+        // Move to next object
+        size_t total_size = sizeof(ObjectHeader) + header->size;
+        total_size = (total_size + GCConfig::OBJECT_ALIGNMENT - 1) & ~(GCConfig::OBJECT_ALIGNMENT - 1);
+        scan += total_size;
+    }
+    
+    // Update current pointer to just after highest live object
+    highest_used = reinterpret_cast<uint8_t*>(
+        (reinterpret_cast<uintptr_t>(highest_used) + GCConfig::OBJECT_ALIGNMENT - 1) & 
+        ~(GCConfig::OBJECT_ALIGNMENT - 1)
+    );
+    
+    if (highest_used < heap_.old_.current) {
+        heap_.old_.current = highest_used;
+    }
+    
+    // Decommit unused memory
+    heap_.decommit_unused_memory();
 }
 
 } // namespace gots

@@ -10,6 +10,12 @@
 #include <cstring>
 #include <stdexcept>
 
+// Optimization macros
+#ifndef likely
+#define likely(x)       __builtin_expect(!!(x), 1)
+#define unlikely(x)     __builtin_expect(!!(x), 0)
+#endif
+
 namespace gots {
 
 // ============================================================================
@@ -46,89 +52,24 @@ static void cleanup_safepoint_page() {
     }
 }
 
-static void protect_safepoint_page() {
-    if (g_safepoint_page && g_safepoint_page != MAP_FAILED) {
-        // Protect the page to cause faults on access
-        int result = mprotect(g_safepoint_page, getpagesize(), PROT_NONE);
-        if (result != 0) {
-            std::cerr << "[GC] ERROR: Failed to protect safepoint page: " << strerror(errno) << "\n";
-            
-            // Critical security fix: Handle protection failure securely
-            switch (errno) {
-                case ENOMEM:
-                    std::cerr << "[GC] Out of memory for memory protection\n";
-                    throw std::runtime_error("Failed to protect safepoint page: out of memory");
-                    
-                case EACCES:
-                    std::cerr << "[GC] Access denied for memory protection\n";
-                    throw std::runtime_error("Failed to protect safepoint page: access denied");
-                    
-                case EINVAL:
-                    std::cerr << "[GC] Invalid memory protection parameters\n";
-                    // Cleanup and fallback to atomic polling
-                    cleanup_safepoint_page();
-                    g_safepoint_page = nullptr;
-                    break;
-                    
-                default:
-                    std::cerr << "[GC] Unknown memory protection error: " << errno << "\n";
-                    throw std::runtime_error("Failed to protect safepoint page: unknown error");
-            }
-            
-            // Fallback to atomic polling only for recoverable errors
-            std::cout << "[GC] Falling back to atomic safepoint polling\n";
-            g_safepoint_requested.store(true, std::memory_order_release);
-        } else {
-            g_safepoint_requested.store(true, std::memory_order_release);
-            std::cout << "[GC] Protected safepoint page for coordinated GC\n";
-        }
-    } else {
-        // No safepoint page available, use atomic polling
-        std::cout << "[GC] Using atomic safepoint polling (no protected page)\n";
-        g_safepoint_requested.store(true, std::memory_order_release);
-    }
+static void request_safepoint_fast() {
+    // Fast atomic-only safepoint mechanism - no system calls
+    g_safepoint_requested.store(true, std::memory_order_release);
+    
+    // Use memory fence to ensure all threads see the safepoint request
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    
+    std::cout << "[GC] Requested safepoint using fast atomic polling\n";
 }
 
-static void unprotect_safepoint_page() {
-    if (g_safepoint_page && g_safepoint_page != MAP_FAILED) {
-        // Unprotect the page with proper error handling
-        int result = mprotect(g_safepoint_page, getpagesize(), PROT_READ | PROT_WRITE);
-        if (result != 0) {
-            std::cerr << "[GC] ERROR: Failed to unprotect safepoint page: " << strerror(errno) << "\n";
-            
-            // Handle unprotection failure - this is serious
-            switch (errno) {
-                case ENOMEM:
-                    std::cerr << "[GC] Out of memory for memory protection\n";
-                    // Continue with atomic release but log the issue
-                    break;
-                    
-                case EACCES:
-                    std::cerr << "[GC] Access denied for memory protection\n";
-                    // This could indicate a security issue
-                    break;
-                    
-                case EINVAL:
-                    std::cerr << "[GC] Invalid memory protection parameters\n";
-                    // Page might be corrupted, cleanup
-                    cleanup_safepoint_page();
-                    g_safepoint_page = nullptr;
-                    break;
-                    
-                default:
-                    std::cerr << "[GC] Unknown memory protection error: " << errno << "\n";
-                    break;
-            }
-            
-            // Even on failure, we must release the safepoint to avoid deadlock
-            std::cout << "[GC] Forcing safepoint release despite unprotect failure\n";
-        } else {
-            std::cout << "[GC] Unprotected safepoint page\n";
-        }
-    }
-    
-    // Always release the safepoint flag
+static void release_safepoint_fast() {
+    // Fast atomic-only safepoint release - no system calls
     g_safepoint_requested.store(false, std::memory_order_release);
+    
+    // Use memory fence to ensure all threads see the release
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    
+    std::cout << "[GC] Released safepoint using fast atomic polling\n";
 }
 
 // ============================================================================
@@ -174,20 +115,48 @@ struct GoroutineInfoImpl {
     void set_stack_roots(void** roots, size_t count) {
         std::lock_guard<std::mutex> lock(roots_mutex);
         
+        // Always cleanup previous allocation
         if (stack_roots) {
             delete[] stack_roots;
-        }
-        
-        if (count > 0) {
-            stack_roots = new void*[count];
-            std::copy(roots, roots + count, stack_roots);
-            stack_root_count = count;
-        } else {
             stack_roots = nullptr;
             stack_root_count = 0;
         }
         
-        std::cout << "[GC] Set " << count << " stack roots for goroutine " << id << "\n";
+        // Validate input parameters
+        if (!roots && count > 0) {
+            std::cerr << "[GC] ERROR: Invalid stack roots - null pointer with non-zero count\n";
+            return;
+        }
+        
+        if (count > 0 && count < 1000000) { // Sanity check for count
+            try {
+                stack_roots = new void*[count];
+                // Copy roots and validate each pointer
+                size_t valid_count = 0;
+                for (size_t i = 0; i < count; ++i) {
+                    if (roots[i] && reinterpret_cast<uintptr_t>(roots[i]) > 0x1000) {
+                        stack_roots[valid_count++] = roots[i];
+                    }
+                }
+                stack_root_count = valid_count;
+                
+                std::cout << "[GC] Set " << valid_count << "/" << count 
+                          << " valid stack roots for goroutine " << id << "\n";
+            } catch (const std::bad_alloc& e) {
+                std::cerr << "[GC] ERROR: Failed to allocate stack roots for goroutine " 
+                          << id << ": " << e.what() << "\n";
+                stack_roots = nullptr;
+                stack_root_count = 0;
+            }
+        } else if (count == 0) {
+            // Valid empty case
+            stack_roots = nullptr;
+            stack_root_count = 0;
+            std::cout << "[GC] Cleared stack roots for goroutine " << id << "\n";
+        } else {
+            std::cerr << "[GC] ERROR: Invalid stack root count " << count 
+                      << " for goroutine " << id << "\n";
+        }
     }
     
     std::vector<void*> get_stack_roots() {
@@ -332,8 +301,21 @@ void GoroutineCoordinatedGC::set_goroutine_stack_roots(uint32_t goroutine_id, vo
 }
 
 void GoroutineCoordinatedGC::safepoint_poll(uint32_t goroutine_id) {
-    if (g_safepoint_requested.load(std::memory_order_acquire)) {
-        safepoint_slow(goroutine_id);
+    // Thread-local safepoint cache to reduce atomic load overhead
+    static thread_local bool tl_safepoint_cache = false;
+    static thread_local size_t tl_cache_counter = 0;
+    
+    // Only check global flag every 64 polls to reduce overhead
+    if (++tl_cache_counter & 0x3F) { // Every 64 calls
+        if (unlikely(tl_safepoint_cache)) {
+            safepoint_slow(goroutine_id);
+        }
+    } else {
+        // Refresh cache from global flag
+        tl_safepoint_cache = g_safepoint_requested.load(std::memory_order_acquire);
+        if (unlikely(tl_safepoint_cache)) {
+            safepoint_slow(goroutine_id);
+        }
     }
 }
 
@@ -383,8 +365,8 @@ void GoroutineCoordinatedGC::wait_for_all_safepoints() {
     
     std::cout << "[GC] Requesting safepoint from " << active_goroutines.size() << " active goroutines\n";
     
-    // Protect safepoint page to trigger faults
-    protect_safepoint_page();
+    // Request safepoint using fast atomic mechanism
+    request_safepoint_fast();
     
     // Wait for all goroutines to reach safepoint with timeout
     bool all_at_safepoint = false;
@@ -463,8 +445,8 @@ void GoroutineCoordinatedGC::wait_for_all_safepoints() {
 void GoroutineCoordinatedGC::release_all_safepoints() {
     std::cout << "[GC] Releasing all goroutines from safepoint...\n";
     
-    // Unprotect safepoint page
-    unprotect_safepoint_page();
+    // Release safepoint using fast atomic mechanism
+    release_safepoint_fast();
     
     // Release all goroutines
     {

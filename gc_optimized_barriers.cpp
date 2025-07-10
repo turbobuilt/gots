@@ -4,7 +4,40 @@
 #include <chrono>
 #include <iostream>
 
+// Optimization macros for branch prediction
+#ifndef likely
+#define likely(x)       __builtin_expect(!!(x), 1)
+#define unlikely(x)     __builtin_expect(!!(x), 0)
+#endif
+
 namespace gots {
+
+// ============================================================================
+// FAST HEADER VALIDATION - No exceptions
+// ============================================================================
+
+// Fast header validation without exception handling
+static inline bool is_valid_header_fast(ObjectHeader* header) {
+    // Validate pointer alignment first
+    uintptr_t addr = reinterpret_cast<uintptr_t>(header);
+    if (addr & 0x7) return false; // Must be 8-byte aligned
+    
+    // Basic range check for reasonable heap addresses
+    if (addr < 0x1000 || addr > 0x7FFFFFFFFFFF) return false;
+    
+    // Use volatile access to prevent optimization and check for segfault
+    volatile ObjectHeader* vol_header = header;
+    
+    // Try to read type_id with minimal risk
+    uint32_t type_id = vol_header->type_id;
+    if (type_id == 0 || type_id > 0xFFFF) return false;
+    
+    // Try to read size field
+    uint32_t size = vol_header->size;
+    if (size == 0 || size > 0x10000000) return false; // Max 256MB object
+    
+    return true;
+}
 
 // ============================================================================
 // STATIC MEMBER DEFINITIONS
@@ -58,13 +91,15 @@ void OptimizedWriteBarrier::shutdown() {
 }
 
 void OptimizedWriteBarrier::write_barrier_slow(void* obj, void** field, void* new_value) {
-    // Validate inputs before proceeding
-    if (!obj || !field) {
-        std::cerr << "ERROR: Invalid write barrier parameters (obj=" << obj << ", field=" << field << ")\n";
-        return;
+    // Validate inputs before proceeding (fast path)
+    if (unlikely(!obj || !field)) {
+        return; // Silent fail for invalid inputs to avoid console spam
     }
     
+    // Conditional statistics collection only in debug builds
+    #ifdef GC_COLLECT_BARRIER_STATS
     barrier_hits_.fetch_add(1, std::memory_order_relaxed);
+    #endif
     
     // Perform the write first
     *field = new_value;
@@ -75,9 +110,11 @@ void OptimizedWriteBarrier::write_barrier_slow(void* obj, void** field, void* ne
     uintptr_t obj_addr = reinterpret_cast<uintptr_t>(obj);
     uintptr_t value_addr = reinterpret_cast<uintptr_t>(new_value);
     
-    if (obj_addr < 0x1000 || value_addr < 0x1000) {
+    if (unlikely(obj_addr < 0x1000 || value_addr < 0x1000)) {
         // Invalid pointers, skip barrier to avoid segfault
+        #ifdef GC_COLLECT_BARRIER_STATS
         false_positives_.fetch_add(1, std::memory_order_relaxed);
+        #endif
         return;
     }
     
@@ -91,30 +128,26 @@ void OptimizedWriteBarrier::write_barrier_slow(void* obj, void** field, void* ne
     
     bool needs_barrier = false;
     
-    try {
-        if (concurrent_marking_active_.load(std::memory_order_relaxed)) {
-            // During concurrent marking, track all pointer stores
+    // Replace try-catch with safe pointer validation
+    if (unlikely(concurrent_marking_active_.load(std::memory_order_relaxed))) {
+        // During concurrent marking, track all pointer stores
+        needs_barrier = true;
+    } else {
+        // Normal generational barrier: old -> young references
+        // Fast header validation without exceptions
+        if (likely(is_valid_header_fast(obj_header) && is_valid_header_fast(value_header))) {
+            needs_barrier = (obj_header->flags & ObjectHeader::IN_OLD_GEN) &&
+                           !(value_header->flags & ObjectHeader::IN_OLD_GEN);
+        } else {
+            // Invalid headers, conservatively mark card
             needs_barrier = true;
-        } else {
-            // Normal generational barrier: old -> young references
-            // Validate headers before accessing flags
-            if (obj_header->type_id != 0 && value_header->type_id != 0) {
-                needs_barrier = (obj_header->flags & ObjectHeader::IN_OLD_GEN) &&
-                               !(value_header->flags & ObjectHeader::IN_OLD_GEN);
-            } else {
-                // Invalid headers, conservatively mark card
-                needs_barrier = true;
-            }
-        }
-        
-        if (needs_barrier) {
-            mark_card_optimized(obj);
-        } else {
+            #ifdef GC_COLLECT_BARRIER_STATS
             false_positives_.fetch_add(1, std::memory_order_relaxed);
+            #endif
         }
-    } catch (...) {
-        // Header access failed, conservatively mark the card
-        std::cerr << "WARNING: Header access failed in write barrier, marking card conservatively\n";
+    }
+    
+    if (unlikely(needs_barrier)) {
         mark_card_optimized(obj);
     }
 }
@@ -252,8 +285,54 @@ void LockFreeRememberedSet::clear() {
 }
 
 LockFreeRememberedSet::RememberedEntry* LockFreeRememberedSet::allocate_entry() {
+    // Try to get an entry from the pool
+    size_t current_index = pool_index_.load(std::memory_order_relaxed);
+    
+    // If pool is exhausted, try to recycle from the hash table
+    if (current_index >= POOL_SIZE) {
+        return recycle_entry();
+    }
+    
+    // Try to atomically increment and get an entry
     size_t index = pool_index_.fetch_add(1, std::memory_order_relaxed);
-    return index < POOL_SIZE ? &entry_pool_[index] : nullptr;
+    if (index < POOL_SIZE) {
+        RememberedEntry* entry = &entry_pool_[index];
+        entry->object.store(nullptr);
+        entry->field_offset.store(0);
+        entry->next.store(nullptr);
+        return entry;
+    }
+    
+    // Pool exhausted during allocation, try recycling
+    return recycle_entry();
+}
+
+// Add recycling mechanism to reuse entries
+LockFreeRememberedSet::RememberedEntry* LockFreeRememberedSet::recycle_entry() {
+    // Find a chain with multiple entries and steal one
+    for (size_t i = 0; i < TABLE_SIZE; i += 16) { // Sample every 16th bucket
+        RememberedEntry* head = table_[i].load(std::memory_order_acquire);
+        if (head && head->next.load()) {
+            // Try to steal the second entry in the chain
+            RememberedEntry* second = head->next.load();
+            if (second && head->next.compare_exchange_weak(second, second->next.load())) {
+                // Successfully recycled an entry
+                second->object.store(nullptr);
+                second->field_offset.store(0);
+                second->next.store(nullptr);
+                return second;
+            }
+        }
+    }
+    
+    // If recycling fails, allocate from system (emergency fallback)
+    static std::atomic<int> emergency_pools{0};
+    if (emergency_pools.load() < 4) { // Limit emergency allocations
+        emergency_pools.fetch_add(1);
+        return new RememberedEntry{};
+    }
+    
+    return nullptr; // Pool truly exhausted
 }
 
 // ============================================================================

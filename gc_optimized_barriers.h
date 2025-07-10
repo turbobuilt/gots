@@ -31,23 +31,53 @@ public:
     static void initialize(uint8_t* heap_start, size_t heap_size, size_t card_size);
     static void shutdown();
     
-    // Ultra-fast inline write barrier
+    // Ultra-fast inline write barrier with maximum optimization
     static inline void write_barrier_fast(void* obj, void** field, void* new_value) {
-        // Check if barrier is needed at all
-        if (!barrier_enabled_.load(std::memory_order_relaxed)) {
-            *field = new_value;
+        // Do the write first - this is the common case and most important
+        *field = new_value;
+        
+        // Early exit if barriers are disabled globally
+        if (unlikely(!barrier_enabled_.load(std::memory_order_relaxed))) {
             return;
         }
         
-        // Fast path: check if both objects are in same generation
-        if (likely(same_generation_fast(obj, new_value))) {
-            *field = new_value;
-            barrier_misses_.fetch_add(1, std::memory_order_relaxed);
+        // Null pointer write never needs barrier
+        if (unlikely(!new_value)) {
             return;
         }
         
-        // Slow path: need to mark card
-        write_barrier_slow(obj, field, new_value);
+        // Ultra-fast generation check using bit manipulation
+        if (likely(same_generation_ultra_fast(obj, new_value))) {
+            // No barrier needed - most common case
+            return;
+        }
+        
+        // Slow path: need to mark card (only for old->young references)
+        mark_card_fast(obj);
+    }
+    
+    // Ultra-fast generation checking using pointer arithmetic
+    static inline bool same_generation_ultra_fast(void* obj1, void* obj2) {
+        // Use pointer arithmetic to check if objects are in same region
+        // This assumes heap layout: young gen followed by old gen
+        const uintptr_t YOUNG_GEN_MASK = 0x7FFFFFF;  // 128MB young gen
+        uintptr_t addr1 = reinterpret_cast<uintptr_t>(obj1);
+        uintptr_t addr2 = reinterpret_cast<uintptr_t>(obj2);
+        
+        // Fast check: if both addresses have same high bits, same generation
+        return ((addr1 ^ addr2) & ~YOUNG_GEN_MASK) == 0;
+    }
+    
+    // Ultra-fast card marking without atomic operations
+    static inline void mark_card_fast(void* obj) {
+        uintptr_t addr = reinterpret_cast<uintptr_t>(obj);
+        size_t card_index = addr >> card_shift_;
+        
+        // Direct write - no atomic needed for card marking
+        // Multiple threads marking same card is benign
+        if (likely(card_index < card_table_size_)) {
+            card_table_[card_index] = 1;
+        }
     }
     
     // SIMD-optimized card scanning
@@ -167,6 +197,7 @@ private:
     }
     
     RememberedEntry* allocate_entry();
+    RememberedEntry* recycle_entry();
 };
 
 // ============================================================================
