@@ -1,1 +1,1 @@
-make clean && make
+make -j$(nproc)

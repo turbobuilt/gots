@@ -82,6 +82,27 @@ void GoTSCompiler::compile(const std::string& source) {
                     std::cout << " (extends " << class_decl->parent_class << ")";
                 }
                 std::cout << std::endl;
+                
+                // CRITICAL: Register operator overloads BEFORE any code generation that might use them
+                for (const auto& op_overload : class_decl->operator_overloads) {
+                    // Generate parameter signature for unique function naming
+                    std::string param_signature = "";
+                    for (size_t i = 0; i < op_overload->parameters.size(); ++i) {
+                        if (i > 0) param_signature += "_";
+                        if (op_overload->parameters[i].type == DataType::UNKNOWN) {
+                            param_signature += "any";
+                        } else {
+                            param_signature += std::to_string(static_cast<int>(op_overload->parameters[i].type));
+                        }
+                    }
+                    
+                    std::string op_function_name = class_decl->name + "::__op_" + std::to_string(static_cast<int>(op_overload->operator_type)) + "_" + param_signature + "__";
+                    OperatorOverload overload(op_overload->operator_type, op_overload->parameters, op_overload->return_type);
+                    overload.function_name = op_function_name;
+                    register_operator_overload(class_decl->name, overload);
+                    std::cout << "Pre-registered operator overload " << op_function_name 
+                              << " for class " << class_decl->name << " with operator type " << static_cast<int>(op_overload->operator_type) << std::endl;
+                }
             }
         }
         
@@ -129,6 +150,11 @@ void GoTSCompiler::compile(const std::string& source) {
                 // Generate methods
                 for (auto& method : class_decl->methods) {
                     method->generate_code(*codegen, type_system);
+                }
+                
+                // Generate operator overloads
+                for (auto& op_overload : class_decl->operator_overloads) {
+                    op_overload->generate_code(*codegen, type_system);
                 }
             }
         }
@@ -707,6 +733,105 @@ Function* GoTSCompiler::get_function(const std::string& name) {
 
 bool GoTSCompiler::is_function_defined(const std::string& name) const {
     return functions.find(name) != functions.end();
+}
+
+void GoTSCompiler::register_operator_overload(const std::string& class_name, const OperatorOverload& overload) {
+    auto it = classes.find(class_name);
+    if (it == classes.end()) {
+        throw std::runtime_error("Cannot register operator overload for undefined class: " + class_name);
+    }
+    
+    it->second.operator_overloads[overload.operator_type].push_back(overload);
+}
+
+const std::vector<OperatorOverload>* GoTSCompiler::get_operator_overloads(const std::string& class_name, TokenType operator_type) {
+    auto class_it = classes.find(class_name);
+    if (class_it == classes.end()) {
+        return nullptr;
+    }
+    
+    auto op_it = class_it->second.operator_overloads.find(operator_type);
+    if (op_it == class_it->second.operator_overloads.end()) {
+        return nullptr;
+    }
+    
+    return &op_it->second;
+}
+
+bool GoTSCompiler::has_operator_overload(const std::string& class_name, TokenType operator_type) {
+    auto class_it = classes.find(class_name);
+    if (class_it == classes.end()) {
+        return false;
+    }
+    
+    return class_it->second.operator_overloads.find(operator_type) != 
+           class_it->second.operator_overloads.end();
+}
+
+const OperatorOverload* GoTSCompiler::find_best_operator_overload(const std::string& class_name, TokenType operator_type, 
+                                                                  const std::vector<DataType>& arg_types) {
+    const auto* overloads = get_operator_overloads(class_name, operator_type);
+    if (!overloads) {
+        return nullptr;
+    }
+    
+    // Find the best matching overload
+    const OperatorOverload* best_match = nullptr;
+    int best_score = -1;
+    
+    for (const auto& overload : *overloads) {
+        if (overload.parameters.size() != arg_types.size()) {
+            continue;
+        }
+        
+        int score = 0;
+        bool match = true;
+        
+        for (size_t i = 0; i < arg_types.size(); ++i) {
+            DataType param_type = overload.parameters[i].type;
+            DataType arg_type = arg_types[i];
+            
+            if (param_type == DataType::UNKNOWN) {
+                // Untyped parameter matches anything
+                score += 1;
+            } else if (param_type == arg_type) {
+                // Exact match
+                score += 10;
+            } else if (type_system.get_cast_type(arg_type, param_type) == param_type) {
+                // Can be cast to parameter type
+                score += 5;
+            } else {
+                match = false;
+                break;
+            }
+        }
+        
+        if (match && score > best_score) {
+            best_score = score;
+            best_match = &overload;
+        }
+    }
+    
+    return best_match;
+}
+
+// Global compiler context for AST generation
+static GoTSCompiler* current_compiler = nullptr;
+
+void set_current_compiler(GoTSCompiler* compiler) {
+    current_compiler = compiler;
+}
+
+GoTSCompiler* get_current_compiler() {
+    return current_compiler;
+}
+
+// Function to compile all deferred function expressions
+void compile_deferred_function_expressions(CodeGenerator& gen, TypeInference& types) {
+    // Stub implementation - in a full implementation this would compile
+    // any function expressions that were deferred during the initial pass
+    (void)gen;
+    (void)types;
 }
 
 }

@@ -89,6 +89,7 @@ enum class TokenType {
     CLASS, EXTENDS, SUPER, THIS, CONSTRUCTOR,
     PUBLIC, PRIVATE, PROTECTED, STATIC,
     EACH, IN, PIPE,  // Added for for-each syntax
+    OPERATOR,  // Added for operator overloading
     LPAREN, RPAREN, LBRACE, RBRACE, LBRACKET, RBRACKET,
     SEMICOLON, COMMA, DOT, COLON, QUESTION,
     ASSIGN, PLUS, MINUS, MULTIPLY, DIVIDE, MODULO, POWER,
@@ -120,6 +121,7 @@ struct Token {
 
 // Forward declarations
 struct ExpressionNode;
+struct OperatorOverloadDecl;
 class GoTSCompiler;
 
 struct Variable {
@@ -139,6 +141,23 @@ struct Function {
     std::vector<Variable> parameters;
     std::vector<uint8_t> machine_code;
     int64_t stack_size;
+    int parameter_count = 0;
+    bool is_method = false;
+    bool is_unmanaged = false;
+    bool is_inline = false;
+    bool is_operator_overload = false;
+    uint64_t address = 0;
+};
+
+struct OperatorOverload {
+    TokenType operator_type;
+    std::vector<Variable> parameters;
+    DataType return_type;
+    std::vector<uint8_t> machine_code;
+    std::string function_name;  // Generated name for the operator function
+    
+    OperatorOverload(TokenType op, const std::vector<Variable>& params, DataType ret_type)
+        : operator_type(op), parameters(params), return_type(ret_type) {}
 };
 
 struct ClassInfo {
@@ -146,6 +165,7 @@ struct ClassInfo {
     std::string parent_class;
     std::vector<Variable> fields;
     std::unordered_map<std::string, Function> methods;
+    std::unordered_map<TokenType, std::vector<OperatorOverload>> operator_overloads;  // Multiple overloads per operator
     Function* constructor;
     int64_t instance_size;  // Total size needed for an instance
     
@@ -323,6 +343,10 @@ public:
     void emit_string_equals_fast(int str1_reg, int str2_reg, int dest_reg);
     void emit_fast_memcpy();  // RDI=dest, RSI=src, RDX=len
     void emit_fast_memcmp();  // RDI=ptr1, RSI=ptr2, RDX=len
+    
+    // Low-level emit helpers
+    void emit_byte(uint8_t byte);
+    void emit_u32(uint32_t value);
 };
 
 class WasmCodeGen : public CodeGenerator {
@@ -407,6 +431,9 @@ private:
     std::unordered_map<std::string, int64_t> variable_offsets;
     int64_t current_offset = -8; // Start at -8 (RBP-8)
     
+    // Function parameter tracking for keyword arguments
+    std::unordered_map<std::string, std::vector<std::string>> function_param_names;
+    
 public:
     DataType infer_type(const std::string& expression);
     DataType get_cast_type(DataType t1, DataType t2);
@@ -425,6 +452,30 @@ public:
     void exit_scope();
     void reset_for_function();
     void reset_for_function_with_params(int param_count);
+    
+    // Function parameter tracking for keyword arguments
+    void register_function_params(const std::string& func_name, const std::vector<std::string>& param_names);
+    std::vector<std::string> get_function_params(const std::string& func_name) const;
+    
+    // Operator overloading type inference
+    DataType infer_operator_result_type(const std::string& class_name, TokenType operator_type, 
+                                       const std::vector<DataType>& operand_types);
+    bool can_use_operator_overload(const std::string& class_name, TokenType operator_type, 
+                                  const std::vector<DataType>& operand_types);
+    
+    // Enhanced operator overloading type inference for [] operator
+    DataType infer_operator_index_type(const std::string& class_name, const std::string& index_expression);
+    bool is_deterministic_expression(const std::string& expression);
+    bool is_array_comparison_expression(const std::string& expression);
+    DataType infer_expression_type(const std::string& expression);
+    DataType infer_complex_expression_type(const std::string& expression);
+    DataType get_best_numeric_operator_type(const std::string& class_name, const std::string& numeric_literal);
+    TokenType string_to_operator_token(const std::string& op_str);
+    
+    // Expression string extraction helpers
+    std::string extract_expression_string(ExpressionNode* node);
+    std::string token_type_to_string(TokenType token);
+    bool is_numeric_literal(const std::string& expression);
 };
 
 struct ASTNode {
@@ -479,6 +530,7 @@ struct TernaryOperator : ExpressionNode {
 struct FunctionCall : ExpressionNode {
     std::string name;
     std::vector<std::unique_ptr<ExpressionNode>> arguments;
+    std::vector<std::string> keyword_names;  // Names for keyword arguments (empty string for positional)
     bool is_goroutine = false;
     bool is_awaited = false;
     FunctionCall(const std::string& n) : name(n) {}
@@ -510,6 +562,7 @@ struct MethodCall : ExpressionNode {
     std::string object_name;
     std::string method_name;
     std::vector<std::unique_ptr<ExpressionNode>> arguments;
+    std::vector<std::string> keyword_names;  // Names for keyword arguments (empty string for positional)
     bool is_goroutine = false;
     bool is_awaited = false;
     MethodCall(const std::string& obj, const std::string& method) 
@@ -521,6 +574,7 @@ struct ExpressionMethodCall : ExpressionNode {
     std::unique_ptr<ExpressionNode> object;
     std::string method_name;
     std::vector<std::unique_ptr<ExpressionNode>> arguments;
+    std::vector<std::string> keyword_names;  // Names for keyword arguments (empty string for positional)
     bool is_goroutine = false;
     bool is_awaited = false;
     ExpressionMethodCall(std::unique_ptr<ExpressionNode> obj, const std::string& method) 
@@ -550,8 +604,20 @@ struct TypedArrayLiteral : ExpressionNode {
 struct ArrayAccess : ExpressionNode {
     std::unique_ptr<ExpressionNode> object;
     std::unique_ptr<ExpressionNode> index;
+    bool is_slice_expression = false;  // True if index contains colons, ellipsis, etc.
+    std::string slice_expression;       // Raw string representation for complex indexing
     ArrayAccess(std::unique_ptr<ExpressionNode> obj, std::unique_ptr<ExpressionNode> idx)
         : object(std::move(obj)), index(std::move(idx)) {}
+    void generate_code(CodeGenerator& gen, TypeInference& types) override;
+};
+
+struct OperatorCall : ExpressionNode {
+    std::unique_ptr<ExpressionNode> left_operand;
+    std::unique_ptr<ExpressionNode> right_operand;  // For binary operators, null for unary
+    TokenType operator_type;
+    std::string class_name;  // Class that defines the operator
+    OperatorCall(std::unique_ptr<ExpressionNode> left, TokenType op, std::unique_ptr<ExpressionNode> right, const std::string& cls)
+        : left_operand(std::move(left)), operator_type(op), right_operand(std::move(right)), class_name(cls) {}
     void generate_code(CodeGenerator& gen, TypeInference& types) override;
 };
 
@@ -750,6 +816,7 @@ struct SuperCall : ExpressionNode {
 struct SuperMethodCall : ExpressionNode {
     std::string method_name;
     std::vector<std::unique_ptr<ExpressionNode>> arguments;
+    std::vector<std::string> keyword_names;  // Names for keyword arguments (empty string for positional)
     SuperMethodCall(const std::string& name) : method_name(name) {}
     void generate_code(CodeGenerator& gen, TypeInference& types) override;
 };
@@ -760,7 +827,19 @@ struct ClassDecl : ASTNode {
     std::vector<Variable> fields;
     std::unique_ptr<ConstructorDecl> constructor;
     std::vector<std::unique_ptr<MethodDecl>> methods;
+    std::vector<std::unique_ptr<OperatorOverloadDecl>> operator_overloads;  // Operator overloads
     ClassDecl(const std::string& n) : name(n) {}
+    void generate_code(CodeGenerator& gen, TypeInference& types) override;
+};
+
+struct OperatorOverloadDecl : ASTNode {
+    TokenType operator_type;  // The operator being overloaded (+, -, *, /, [], etc.)
+    std::vector<Variable> parameters;  // Parameters for the operator
+    DataType return_type = DataType::UNKNOWN;
+    std::vector<std::unique_ptr<ASTNode>> body;
+    std::string class_name;  // Class this operator belongs to
+    OperatorOverloadDecl(TokenType op, const std::string& class_name) 
+        : operator_type(op), class_name(class_name) {}
     void generate_code(CodeGenerator& gen, TypeInference& types) override;
 };
 
@@ -830,6 +909,7 @@ private:
     std::unique_ptr<ASTNode> parse_class_declaration();
     std::unique_ptr<MethodDecl> parse_method_declaration();
     std::unique_ptr<ConstructorDecl> parse_constructor_declaration(const std::string& class_name);
+    std::unique_ptr<OperatorOverloadDecl> parse_operator_overload_declaration(const std::string& class_name);
     
     DataType parse_type();
     
@@ -855,6 +935,8 @@ struct ModuleLoadInfo {
     
     ModuleLoadInfo() : load_start_time(std::chrono::steady_clock::now()) {}
 };
+
+struct FunctionExpression;  // Forward declaration for deferred compilation
 
 struct Module {
     std::string path;
@@ -933,10 +1015,18 @@ public:
     ClassInfo* get_class(const std::string& class_name);
     bool is_class_defined(const std::string& class_name);
     
+    // Operator overloading management
+    void register_operator_overload(const std::string& class_name, const OperatorOverload& overload);
+    const std::vector<OperatorOverload>* get_operator_overloads(const std::string& class_name, TokenType operator_type);
+    bool has_operator_overload(const std::string& class_name, TokenType operator_type);
+    const OperatorOverload* find_best_operator_overload(const std::string& class_name, TokenType operator_type, 
+                                                      const std::vector<DataType>& arg_types);
+    
 };
 
 // Global function for setting compiler context during AST generation
 void set_current_compiler(GoTSCompiler* compiler);
+GoTSCompiler* get_current_compiler();
 
 // Function to compile all deferred function expressions
 void compile_deferred_function_expressions(CodeGenerator& gen, TypeInference& types);

@@ -88,53 +88,7 @@ struct VariableBinding {
     // Note: Memory managed by GC, no manual reference counting needed
 
 private:
-    void cleanup_value(void* ptr, DataType type) {
-        if (!ptr) return;
-        
-        switch (type) {
-            case DataType::STRING:
-                delete static_cast<std::string*>(ptr);
-                break;
-            case DataType::INT8:
-                delete static_cast<int8_t*>(ptr);
-                break;
-            case DataType::INT16:
-                delete static_cast<int16_t*>(ptr);
-                break;
-            case DataType::INT32:
-                delete static_cast<int32_t*>(ptr);
-                break;
-            case DataType::INT64:
-                delete static_cast<int64_t*>(ptr);
-                break;
-            case DataType::UINT8:
-                delete static_cast<uint8_t*>(ptr);
-                break;
-            case DataType::UINT16:
-                delete static_cast<uint16_t*>(ptr);
-                break;
-            case DataType::UINT32:
-                delete static_cast<uint32_t*>(ptr);
-                break;
-            case DataType::UINT64:
-                delete static_cast<uint64_t*>(ptr);
-                break;
-            case DataType::FLOAT32:
-                delete static_cast<float*>(ptr);
-                break;
-            case DataType::FLOAT64:
-                delete static_cast<double*>(ptr);
-                break;
-            case DataType::BOOLEAN:
-                delete static_cast<bool*>(ptr);
-                break;
-            default:
-                // For unknown types, assume it's a generic pointer that should be deleted
-                // In a full GC system, this would be handled by the garbage collector
-                delete static_cast<char*>(ptr);
-                break;
-        }
-    }
+    void cleanup_value(void* ptr, DataType type);
     
     template<typename T>
     constexpr DataType get_data_type() const {

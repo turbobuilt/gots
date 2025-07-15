@@ -1,4 +1,5 @@
 #include "compiler.h"
+#include <algorithm>
 #include <stdexcept>
 #include <iostream>
 
@@ -233,7 +234,29 @@ std::unique_ptr<ExpressionNode> Parser::parse_call() {
             
             if (!check(TokenType::RPAREN)) {
                 do {
-                    call->arguments.push_back(parse_expression());
+                    // Check if this is a keyword argument (name=value)
+                    if (check(TokenType::IDENTIFIER)) {
+                        // Save current position to potentially backtrack
+                        size_t saved_pos = pos;
+                        Token id_token = current_token();
+                        advance();
+                        
+                        if (check(TokenType::ASSIGN)) {
+                            // This is a keyword argument
+                            advance(); // consume '='
+                            call->keyword_names.push_back(id_token.value);
+                            call->arguments.push_back(parse_expression());
+                        } else {
+                            // Not a keyword argument, backtrack and parse as normal expression
+                            pos = saved_pos;
+                            call->keyword_names.push_back(""); // Empty string for positional arg
+                            call->arguments.push_back(parse_expression());
+                        }
+                    } else {
+                        // Regular positional argument
+                        call->keyword_names.push_back(""); // Empty string for positional arg
+                        call->arguments.push_back(parse_expression());
+                    }
                 } while (match(TokenType::COMMA));
             }
             
@@ -270,7 +293,29 @@ std::unique_ptr<ExpressionNode> Parser::parse_call() {
                     
                     if (!check(TokenType::RPAREN)) {
                         do {
-                            super_method_call->arguments.push_back(parse_expression());
+                            // Check if this is a keyword argument (name=value)
+                            if (check(TokenType::IDENTIFIER)) {
+                                // Save current position to potentially backtrack
+                                size_t saved_pos = pos;
+                                Token id_token = current_token();
+                                advance();
+                                
+                                if (check(TokenType::ASSIGN)) {
+                                    // This is a keyword argument
+                                    advance(); // consume '='
+                                    super_method_call->keyword_names.push_back(id_token.value);
+                                    super_method_call->arguments.push_back(parse_expression());
+                                } else {
+                                    // Not a keyword argument, backtrack and parse as normal expression
+                                    pos = saved_pos;
+                                    super_method_call->keyword_names.push_back(""); // Empty string for positional arg
+                                    super_method_call->arguments.push_back(parse_expression());
+                                }
+                            } else {
+                                // Regular positional argument
+                                super_method_call->keyword_names.push_back(""); // Empty string for positional arg
+                                super_method_call->arguments.push_back(parse_expression());
+                            }
                         } while (match(TokenType::COMMA));
                     }
                     
@@ -299,7 +344,29 @@ std::unique_ptr<ExpressionNode> Parser::parse_call() {
                     
                     if (!check(TokenType::RPAREN)) {
                         do {
-                            method_call->arguments.push_back(parse_expression());
+                            // Check if this is a keyword argument (name=value)
+                            if (check(TokenType::IDENTIFIER)) {
+                                // Save current position to potentially backtrack
+                                size_t saved_pos = pos;
+                                Token id_token = current_token();
+                                advance();
+                                
+                                if (check(TokenType::ASSIGN)) {
+                                    // This is a keyword argument
+                                    advance(); // consume '='
+                                    method_call->keyword_names.push_back(id_token.value);
+                                    method_call->arguments.push_back(parse_expression());
+                                } else {
+                                    // Not a keyword argument, backtrack and parse as normal expression
+                                    pos = saved_pos;
+                                    method_call->keyword_names.push_back(""); // Empty string for positional arg
+                                    method_call->arguments.push_back(parse_expression());
+                                }
+                            } else {
+                                // Regular positional argument
+                                method_call->keyword_names.push_back(""); // Empty string for positional arg
+                                method_call->arguments.push_back(parse_expression());
+                            }
                         } while (match(TokenType::COMMA));
                     }
                     
@@ -318,7 +385,29 @@ std::unique_ptr<ExpressionNode> Parser::parse_call() {
                     
                     if (!check(TokenType::RPAREN)) {
                         do {
-                            expr_method_call->arguments.push_back(parse_expression());
+                            // Check if this is a keyword argument (name=value)
+                            if (check(TokenType::IDENTIFIER)) {
+                                // Save current position to potentially backtrack
+                                size_t saved_pos = pos;
+                                Token id_token = current_token();
+                                advance();
+                                
+                                if (check(TokenType::ASSIGN)) {
+                                    // This is a keyword argument
+                                    advance(); // consume '='
+                                    expr_method_call->keyword_names.push_back(id_token.value);
+                                    expr_method_call->arguments.push_back(parse_expression());
+                                } else {
+                                    // Not a keyword argument, backtrack and parse as normal expression
+                                    pos = saved_pos;
+                                    expr_method_call->keyword_names.push_back(""); // Empty string for positional arg
+                                    expr_method_call->arguments.push_back(parse_expression());
+                                }
+                            } else {
+                                // Regular positional argument
+                                expr_method_call->keyword_names.push_back(""); // Empty string for positional arg
+                                expr_method_call->arguments.push_back(parse_expression());
+                            }
                         } while (match(TokenType::COMMA));
                     }
                     
@@ -368,15 +457,71 @@ std::unique_ptr<ExpressionNode> Parser::parse_call() {
             expr.release();
             expr = std::make_unique<PostfixDecrement>(var_name);
         } else if (match(TokenType::LBRACKET)) {
-            // Handle array access
+            // Handle array access or operator[] overload
             auto object_expr = std::move(expr);
-            auto index_expr = parse_expression();
             
-            if (!match(TokenType::RBRACKET)) {
-                throw std::runtime_error("Expected ']' after array index");
+            // Save current position in case we need to backtrack
+            size_t saved_pos = pos;
+            std::unique_ptr<ExpressionNode> index_expr;
+            bool is_slice_expression = false;
+            std::string slice_content;
+            
+            try {
+                // Try to parse as a normal expression first
+                index_expr = parse_expression();
+                
+                if (!match(TokenType::RBRACKET)) {
+                    throw std::runtime_error("Expected ']' after array index");
+                }
+            } catch (const std::exception&) {
+                // Parsing as expression failed, treat as slice/string content
+                pos = saved_pos;  // Reset to position after '['
+                
+                // Collect all tokens until ']' as a string
+                std::string raw_content;
+                int bracket_depth = 1;
+                
+                while (pos < tokens.size() && bracket_depth > 0) {
+                    const auto& token = tokens[pos];
+                    
+                    if (token.type == TokenType::LBRACKET) {
+                        bracket_depth++;
+                    } else if (token.type == TokenType::RBRACKET) {
+                        bracket_depth--;
+                        if (bracket_depth == 0) {
+                            break; // Don't include the closing ']'
+                        }
+                    }
+                    
+                    if (!raw_content.empty()) {
+                        raw_content += " ";
+                    }
+                    raw_content += token.value;
+                    pos++;
+                }
+                
+                if (bracket_depth > 0) {
+                    throw std::runtime_error("Expected ']' after array index");
+                }
+                
+                // Consume the closing ']'
+                if (!match(TokenType::RBRACKET)) {
+                    throw std::runtime_error("Expected ']' after array index");
+                }
+                
+                // Create a string literal with the raw content
+                index_expr = std::make_unique<StringLiteral>(raw_content);
+                is_slice_expression = true;
+                slice_content = raw_content;
             }
             
-            expr = std::make_unique<ArrayAccess>(std::move(object_expr), std::move(index_expr));
+            // Create ArrayAccess node
+            auto array_access = std::make_unique<ArrayAccess>(std::move(object_expr), std::move(index_expr));
+            if (is_slice_expression) {
+                array_access->is_slice_expression = true;
+                array_access->slice_expression = slice_content;
+            }
+            expr = std::move(array_access);
         } else {
             break;
         }
@@ -1161,6 +1306,10 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
                 throw std::runtime_error("Class can only have one constructor");
             }
             class_decl->constructor = parse_constructor_declaration(class_decl->name);
+        } else if (check(TokenType::OPERATOR)) {
+            // Operator overloading declaration
+            auto operator_overload = parse_operator_overload_declaration(class_decl->name);
+            class_decl->operator_overloads.push_back(std::move(operator_overload));
         } else if (check(TokenType::IDENTIFIER)) {
             // Could be field or method
             std::string member_name = current_token().value;
@@ -1200,7 +1349,7 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
                 throw std::runtime_error("Expected ':' for field or '(' for method");
             }
         } else {
-            throw std::runtime_error("Expected constructor, field, or method declaration");
+            throw std::runtime_error("Expected constructor, operator, field, or method declaration");
         }
     }
     
@@ -1512,6 +1661,88 @@ std::vector<std::unique_ptr<ASTNode>> Parser::parse() {
     }
     
     return statements;
+}
+
+std::unique_ptr<OperatorOverloadDecl> Parser::parse_operator_overload_declaration(const std::string& class_name) {
+    if (!match(TokenType::OPERATOR)) {
+        throw std::runtime_error("Expected 'operator'");
+    }
+    
+    // Parse the operator symbol
+    TokenType operator_type = current_token().type;
+    if (operator_type != TokenType::PLUS && operator_type != TokenType::MINUS && 
+        operator_type != TokenType::MULTIPLY && operator_type != TokenType::DIVIDE &&
+        operator_type != TokenType::LBRACKET && operator_type != TokenType::EQUAL &&
+        operator_type != TokenType::NOT_EQUAL && operator_type != TokenType::LESS &&
+        operator_type != TokenType::GREATER && operator_type != TokenType::LESS_EQUAL &&
+        operator_type != TokenType::GREATER_EQUAL) {
+        throw std::runtime_error("Invalid operator for overloading");
+    }
+    
+    advance(); // consume operator token
+    
+    // Special handling for [] operator
+    if (operator_type == TokenType::LBRACKET) {
+        if (!match(TokenType::RBRACKET)) {
+            throw std::runtime_error("Expected ']' after '['");
+        }
+    }
+    
+    auto operator_decl = std::make_unique<OperatorOverloadDecl>(operator_type, class_name);
+    
+    if (!match(TokenType::LPAREN)) {
+        throw std::runtime_error("Expected '(' after operator");
+    }
+    
+    // Parse parameters
+    while (!check(TokenType::RPAREN) && !check(TokenType::EOF_TOKEN)) {
+        if (!check(TokenType::IDENTIFIER)) {
+            throw std::runtime_error("Expected parameter name");
+        }
+        
+        Variable param;
+        param.name = current_token().value;
+        advance();
+        
+        if (match(TokenType::COLON)) {
+            param.type = parse_type();
+        } else {
+            param.type = DataType::UNKNOWN; // Untyped parameter
+        }
+        
+        param.is_mutable = true;
+        operator_decl->parameters.push_back(param);
+        
+        if (!check(TokenType::RPAREN)) {
+            if (!match(TokenType::COMMA)) {
+                throw std::runtime_error("Expected ',' or ')' in operator parameters");
+            }
+        }
+    }
+    
+    if (!match(TokenType::RPAREN)) {
+        throw std::runtime_error("Expected ')' after operator parameters");
+    }
+    
+    // Optional return type
+    if (match(TokenType::COLON)) {
+        operator_decl->return_type = parse_type();
+    }
+    
+    // Parse function body
+    if (!match(TokenType::LBRACE)) {
+        throw std::runtime_error("Expected '{' for operator body");
+    }
+    
+    while (!check(TokenType::RBRACE) && !check(TokenType::EOF_TOKEN)) {
+        operator_decl->body.push_back(parse_statement());
+    }
+    
+    if (!match(TokenType::RBRACE)) {
+        throw std::runtime_error("Expected '}' after operator body");
+    }
+    
+    return operator_decl;
 }
 
 }

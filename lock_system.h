@@ -9,14 +9,8 @@
 
 namespace gots {
 
-// Minimal Goroutine interface for Lock system integration
-class Goroutine {
-public:
-    virtual ~Goroutine() = default;
-    virtual int64_t get_id() const = 0;
-    virtual void yield() {}
-    virtual void notify_scheduler() {}
-};
+// Forward declaration for Goroutine (actual implementation in goroutine_system.h)
+class Goroutine;
 
 // Simple stub for getting current goroutine (will be properly implemented later)
 std::shared_ptr<Goroutine> get_current_goroutine();

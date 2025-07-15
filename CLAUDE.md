@@ -24,6 +24,29 @@ let results = await Promise.all([1,2,3].goMap(doSomething));
 
 The cool thing is these execute in parallel.
 
+The goroutines also need to be able to function in extremely high performance.  Therefore all functions will have the unmanaged keyword. Unmanaged functions do not have an event loop, cannot have async code, and compile directly to machine code. They are for high performance synchronous code that must be run multithreaded. They still return a promise though. They can also be marked "inline" to tell the compiler to inline them for additional performance.
+
+```
+// this code will not be subject to garbage collection. Therefore closures are prohibited.
+// it also does not have access to parent lexical scope for performance.
+unmanaged function x(a,b) {
+    var a = 0;
+    var b = 1;
+    var c = [];
+    for (var i =0; i < 100; ++i) {
+        c.push([i])
+    }
+    return a + b;
+}
+let result = await go x();
+inline unmanaged function x(a,b) {
+    var a = 0;
+    var b = 1;
+    return a + b;
+}
+let result = await go x();
+```
+
 The problem with javascript is that it is slow due dynamic typing. Therefore GoTS natively uses static typing when specified.
 
 Unlike javascript where "number" is a float64 by default, GoTS allows specifying not only `number`, but also all types from 32 bit to 64 bit. Additional support will be added later.
@@ -80,21 +103,50 @@ class Point {
     operator + (a, b) { // a is Point, by is any 
         // coder can do whatever the heck they want with it here.
     }
+
+    operator [] (p: Point, contents: string) {
+        console.log(contents); // "anything goes here"
+    }
+    
+    operator [] (p: Point, b) {
+        console.log(b); // fallback handles any type
+    }
 }
+
+let x = new Point();
+
+x[anything goes here]
 ```
 
 It may cause a few issues omitting var, but it's important for newbies that it exists like that.
 
-The program has a built in "tensor" type which mirrors pytorch perfectly. It contains array slicing, etc. For example
+The program has a built in "Array" type which mirrors pytorch perfectly. It contains array slicing, etc. For example
 
 ```gots
-var x: tensor = []; // infers that this is a tensor not regular array from type
-x.push(1) // works since it is 1d
-x.pop() // works since it is 1d
+var x: array = []; // any type
+x.push(1) // pushes an element onto 0th dimension.
+x.pop() // removes last element from 0th position
 x.shape // returns [0]
+x.length // returns x.shape[0]
 // all other pytorch ops work
-var y = tensor.zeros([10,4,5]) // create empty tensor with zeros
-var y = new tensor(shape, values) // create tensor of shape with given values
+var y: [int64] = Array.zeros([10,4,5]) // create empty tensor with zeros of given shape
+var y = Array.linspace(...)
+var y = new Array(values, shape) // create tensor of shape with given values
+
+// typed array
+var y: [int32] = [1,2,3];
+
+// support dot product, etc.
+```
+
+It supports keyword function parameters
+
+```
+function test(a,b,c) {
+    console.log(a,b,c)
+}
+
+test(5, c=10) // b would be undefined
 ```
 
 It supports creating objects with values like dart

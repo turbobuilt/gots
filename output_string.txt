@@ -1,0 +1,142 @@
+DEBUG: Starting GoTS with simplified timer system
+DEBUG: Initializing new goroutine system
+Tokens generated: 94
+AST nodes: 3
+Generated default constructor for class: Point
+Registered class: Point with 2 fields
+Pre-registered operator overload Point::__op_44_any_13__ for class Point with operator type 44
+DEBUG: Starting Three-Phase Compilation System
+DEBUG: Starting Phase 1 - Function Discovery
+DEBUG: AST has 3 top-level nodes
+DEBUG: Processing AST node 0 type: N4gots9ClassDeclE
+DEBUG: Traversing node type: N4gots9ClassDeclE at 0x604f48622120
+DEBUG: Processing AST node 1 type: N4gots12FunctionDeclE
+DEBUG: Traversing node type: N4gots12FunctionDeclE at 0x604f48622830
+DEBUG: Processing AST node 2 type: N4gots12FunctionCallE
+DEBUG: Traversing node type: N4gots12FunctionCallE at 0x604f48622d60
+DEBUG: Phase 1 Complete - Discovered 0 functions
+DEBUG: Starting Phase 2 - Function Compilation
+DEBUG: Compiling functions in reverse order (innermost first)
+DEBUG: Phase 2 Complete - Total function code size: 0
+DEBUG: emit_label(test) at offset 5
+DEBUG: Unimplemented runtime function: __object_create
+DEBUG: About to generate call to __object_create at address 0x604f09846a94
+DEBUG: Generated call instruction for __object_create
+DEBUG: Unimplemented runtime function: __constructor_Point
+DEBUG: About to generate call to __constructor_Point at address 0x604f09846a94
+DEBUG: Generated call instruction for __constructor_Point
+DEBUG: Generated call to constructor: __constructor_Point with 0 arguments
+DEBUG: Generated object creation for class: Point
+DEBUG: Assignment p - declared_type: 0, value->result_type: 18
+DEBUG: Set variable p class type to: Point
+DEBUG: Set variable p type to CLASS_INSTANCE
+DEBUG: ArrayAccess::generate_code called
+DEBUG: ArrayAccess variable p has type: 18
+DEBUG: Variable p is CLASS_INSTANCE of class: Point
+DEBUG: Checking for operator[] overload in class: Point
+DEBUG: Looking for TokenType::LBRACKET which has value: 44
+DEBUG: Class Point has operator[] overload: YES
+DEBUG: Using operator[] overload for class Point
+DEBUG: Using slice expression: 2 : 6
+DEBUG: infer_operator_index_type called with class=Point, expression='2 : 6'
+DEBUG: Expression is deterministic: NO
+DEBUG: Inferred index type: 0 for expression: 2 : 6
+DEBUG: Generating string literal for slice: '2 : 6'
+DEBUG: About to generate call to __string_intern at address 0x604f09846abd
+DEBUG: Generated call instruction for __string_intern
+DEBUG: Calling operator overload directly: Point::__op_44_any_13__
+DEBUG: Using direct operator overload: Point::__op_44_any_13__
+DEBUG: ArrayAccess result_type: 18
+DEBUG: MethodCall - object: 'console', method: 'log'
+DEBUG: About to generate call to __string_intern at address 0x604f09846abd
+DEBUG: Generated call instruction for __string_intern
+DEBUG: About to generate call to __console_log_string at address 0x604f09846716
+DEBUG: Generated call instruction for __console_log_string
+DEBUG: About to generate call to __console_log_newline at address 0x604f0984673f
+DEBUG: Generated call instruction for __console_log_newline
+DEBUG: emit_label(__constructor_Point) at offset 208
+DEBUG: Unimplemented runtime function: __object_set_property
+DEBUG: About to generate call to __object_set_property at address 0x604f09846a94
+DEBUG: Generated call instruction for __object_set_property
+DEBUG: Initialized field 'y' with default value
+DEBUG: Generating constructor body with 0 statements
+DEBUG: Generated constructor function: __constructor_Point
+DEBUG: emit_label(Point::__op_44_any_13__) at offset 285
+DEBUG: MethodCall - object: 'console', method: 'log'
+DEBUG: About to generate call to __string_intern at address 0x604f09846abd
+DEBUG: Generated call instruction for __string_intern
+DEBUG: About to generate call to __console_log_string at address 0x604f09846716
+DEBUG: Generated call instruction for __console_log_string
+DEBUG: About to generate call to __console_log_space at address 0x604f09846763
+DEBUG: Generated call instruction for __console_log_space
+DEBUG: About to generate call to __console_log_auto at address 0x604f0984683c
+DEBUG: Generated call instruction for __console_log_auto
+DEBUG: About to generate call to __console_log_newline at address 0x604f0984673f
+DEBUG: Generated call instruction for __console_log_newline
+DEBUG: Unimplemented runtime function: __object_create
+DEBUG: About to generate call to __object_create at address 0x604f09846a94
+DEBUG: Generated call instruction for __object_create
+DEBUG: Unimplemented runtime function: __constructor_Point
+DEBUG: About to generate call to __constructor_Point at address 0x604f09846a94
+DEBUG: Generated call instruction for __constructor_Point
+DEBUG: Generated call to constructor: __constructor_Point with 0 arguments
+DEBUG: Generated object creation for class: Point
+DEBUG: Registering operator overload Point::__op_44_any_13__ for class Point with operator type 44
+DEBUG: After registration, class Point has operator type 44 overload: YES
+DEBUG: emit_label(__main) at offset 484
+DEBUG: ClassDecl code generation: Point (constructor and methods generated separately)
+DEBUG: Generating jump to epilogue at offset 513
+DEBUG: emit_label(__main_epilogue) at offset 518
+DEBUG: About to emit main function epilogue at code offset 525
+DEBUG: Main function epilogue emitted, final code size: 547
+Code generation completed. Machine code size: 547 bytes
+DEBUG: __set_executable_memory called with 0x7bfa675fd000 size=4096
+DEBUG: Initializing new goroutine system
+DEBUG: Legacy function resolution disabled (using fast function table)
+DEBUG: Compiling deferred function expressions after stubs
+DEBUG: Assigning function addresses in executable memory
+DEBUG: Registering functions in runtime system
+DEBUG: Function Registry:
+DEBUG: All label offsets:
+  __main_epilogue -> 518
+  Point::__op_44_any_13__ -> 285
+  __main -> 484
+  __constructor_Point -> 208
+  test -> 5
+DEBUG: Registering function Point::__op_44_any_13__ at offset 285 (address 0x7bfa675fd11d)
+DEBUG: Registering function test at offset 5 (address 0x7bfa675fd005)
+DEBUG: About to execute main function at offset 484
+DEBUG: exec_mem = 0x7bfa675fd000
+DEBUG: Creating function pointer...
+DEBUG: Function pointer created successfully
+DEBUG: func address = 0x7bfa675fd1e4
+DEBUG: About to spawn main function as main goroutine...
+DEBUG: Main function starts at offset 484
+DEBUG: Registered goroutine 0, total: 1
+DEBUG: Main goroutine spawned with ID 0
+DEBUG: Main goroutine spawned successfully
+DEBUG: Main execution complete - simplified timer system running
+DEBUG: Program execution completed successfully
+DEBUG: Main function completed - waiting for main goroutine to exit
+DEBUG: Waiting for main goroutine to complete...
+DEBUG: Goroutine 0 starting execution
+DEBUG: Executing main function in main goroutine
+B IS  
+Test completed successfully
+DEBUG: Main function completed with result: 0
+DEBUG: Goroutine 0 main task completed
+DEBUG: Goroutine 0 entering event loop
+DEBUG: Goroutine 0 event loop started
+DEBUG: Goroutine 0 event loop: no active operations, exiting
+DEBUG: Goroutine 0 event loop exited
+DEBUG: Goroutine 0 completed
+DEBUG: Main goroutine completed - signaling main thread
+DEBUG: Signaled main goroutine completion
+DEBUG: Main goroutine completed - all children and timers are done
+DEBUG: Main goroutine completed - all children and timers are done
+DEBUG: About to call __runtime_cleanup()
+DEBUG: Cleaning up goroutine system
+DEBUG: __runtime_cleanup() completed
+DEBUG: Main execution completed, waiting for active work...
+DEBUG: Cleaning up goroutine system
+DEBUG: GoTS program finished

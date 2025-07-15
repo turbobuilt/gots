@@ -297,6 +297,66 @@ void __console_log_space() {
     std::cout << " ";
 }
 
+void __console_log_number(int64_t value) {
+    std::lock_guard<std::mutex> lock(g_console_mutex);
+    std::cout << value;
+    std::cout.flush();
+}
+
+void __console_log_auto(int64_t value) {
+    // Check if it's a likely heap pointer (string or object)
+    if (value > 0x100000) {  // Likely a heap pointer
+        // Try to safely read the string by using the __console_log_string function
+        // This way we use the existing safe string handling
+        void* ptr = reinterpret_cast<void*>(value);
+        
+        // Try to call the string logger directly and see if it works
+        try {
+            __console_log_string(ptr);
+            return;
+        } catch (...) {
+            // String printing failed, try other types
+        }
+        
+        // Check if it might be an object ID
+        if (object_registry.find(value) != object_registry.end()) {
+            __console_log_object(value);
+            return;
+        }
+    }
+    
+    // Default: treat as number
+    std::cout << value;
+}
+
+void __console_log_string(void* string_ptr) {
+    std::lock_guard<std::mutex> lock(g_console_mutex);
+    if (string_ptr) {
+        // Handle basic char* strings
+        const char* str = static_cast<const char*>(string_ptr);
+        std::cout << str;
+        std::cout.flush();
+    }
+}
+
+void __console_log_object(int64_t object_id) {
+    auto it = object_registry.find(object_id);
+    if (it != object_registry.end()) {
+        std::cout << "[object Object]";
+    } else {
+        std::cout << "Object#" << object_id;
+    }
+}
+
+// Helper function to extract C string from GoTSString pointer
+const char* __gots_string_to_cstr(void* gots_string_ptr) {
+    if (!gots_string_ptr) {
+        return "";
+    }
+    GoTSString* str = static_cast<GoTSString*>(gots_string_ptr);
+    return str->c_str();
+}
+
 // Stub function for unimplemented runtime functions
 void __runtime_stub_function() {
     // Do nothing - just return

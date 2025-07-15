@@ -120,15 +120,17 @@ bool LockJITCompiler::validate_lock_operation(LockOperation op, const std::vecto
 
 bool LockJITCompiler::try_emit_lock_pattern(CodeGenerator& gen, const std::string& pattern) {
     // Recognize common patterns and emit optimized code
+    TypeInference types{};
+    
     if (pattern == "lock_guard") {
         // RAII lock pattern: automatically unlock on scope exit
         // This would emit stack unwinding code for automatic unlock
-        return LockPatternOptimizer::optimize_lock_guard_pattern(gen, TypeInference{});
+        return LockPatternOptimizer::optimize_lock_guard_pattern(gen, types);
     }
     
     if (pattern == "critical_section") {
         // Simple lock/unlock pattern with critical section
-        return LockPatternOptimizer::optimize_critical_section_pattern(gen, TypeInference{});
+        return LockPatternOptimizer::optimize_critical_section_pattern(gen, types);
     }
     
     return false;

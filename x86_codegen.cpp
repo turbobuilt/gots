@@ -257,6 +257,8 @@ static void initialize_runtime_function_table() {
     g_runtime_function_table["__console_log_newline"] = (void*)__console_log_newline;
     g_runtime_function_table["__console_log_space"] = (void*)__console_log_space;
     g_runtime_function_table["__console_log_string"] = (void*)__console_log;
+    g_runtime_function_table["__console_log_auto"] = (void*)__console_log_auto;
+    g_runtime_function_table["__gots_string_to_cstr"] = (void*)__gots_string_to_cstr;
     
     // High-performance goroutine spawn functions
     g_runtime_function_table["__goroutine_spawn_fast"] = (void*)__goroutine_spawn_fast;
@@ -1026,5 +1028,16 @@ void X86CodeGen::emit_calculate_function_address_from_offset(size_t function_off
     
     // Result is now in RAX (the function address)
 }
+
+// Stub implementations for lock methods
+void X86CodeGen::emit_lock_acquire(int lock_id) { (void)lock_id; }
+void X86CodeGen::emit_lock_release(int lock_id) { (void)lock_id; }
+void X86CodeGen::emit_lock_try_acquire(int lock_id, int result_reg) { (void)lock_id; (void)result_reg; }
+void X86CodeGen::emit_lock_try_acquire_timeout(int lock_id, int timeout_reg, int result_reg) { (void)lock_id; (void)timeout_reg; (void)result_reg; }
+void X86CodeGen::emit_atomic_compare_exchange(int ptr_reg, int expected_reg, int desired_reg, int result_reg) { (void)ptr_reg; (void)expected_reg; (void)desired_reg; (void)result_reg; }
+void X86CodeGen::emit_atomic_fetch_add(int ptr_reg, int value_reg, int result_reg) { (void)ptr_reg; (void)value_reg; (void)result_reg; }
+void X86CodeGen::emit_atomic_store(int ptr_reg, int value_reg, int ordering) { (void)ptr_reg; (void)value_reg; (void)ordering; }
+void X86CodeGen::emit_atomic_load(int ptr_reg, int result_reg, int ordering) { (void)ptr_reg; (void)result_reg; (void)ordering; }
+void X86CodeGen::emit_memory_fence(int fence_type) { (void)fence_type; }
 
 }

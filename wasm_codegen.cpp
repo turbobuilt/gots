@@ -415,4 +415,15 @@ void WasmCodeGen::emit_goroutine_spawn_direct(void* function_address) {
     emit_call("__goroutine_spawn_func_ptr");
 }
 
+// Stub implementations for lock methods
+void WasmCodeGen::emit_lock_acquire(int lock_id) { (void)lock_id; }
+void WasmCodeGen::emit_lock_release(int lock_id) { (void)lock_id; }
+void WasmCodeGen::emit_lock_try_acquire(int lock_id, int result_reg) { (void)lock_id; (void)result_reg; }
+void WasmCodeGen::emit_lock_try_acquire_timeout(int lock_id, int timeout_reg, int result_reg) { (void)lock_id; (void)timeout_reg; (void)result_reg; }
+void WasmCodeGen::emit_atomic_compare_exchange(int ptr_reg, int expected_reg, int desired_reg, int result_reg) { (void)ptr_reg; (void)expected_reg; (void)desired_reg; (void)result_reg; }
+void WasmCodeGen::emit_atomic_fetch_add(int ptr_reg, int value_reg, int result_reg) { (void)ptr_reg; (void)value_reg; (void)result_reg; }
+void WasmCodeGen::emit_atomic_store(int ptr_reg, int value_reg, int ordering) { (void)ptr_reg; (void)value_reg; (void)ordering; }
+void WasmCodeGen::emit_atomic_load(int ptr_reg, int result_reg, int ordering) { (void)ptr_reg; (void)result_reg; (void)ordering; }
+void WasmCodeGen::emit_memory_fence(int fence_type) { (void)fence_type; }
+
 }

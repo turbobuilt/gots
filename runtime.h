@@ -811,6 +811,7 @@ extern "C" {
     void __console_log_number(int64_t value);
     void __console_log_auto(int64_t value);
     void __console_log_smart(int64_t value);
+    const char* __gots_string_to_cstr(void* gots_string_ptr);
     bool __is_array_pointer(int64_t value);
     void __console_time(const char* label);
     void __console_timeEnd(const char* label);

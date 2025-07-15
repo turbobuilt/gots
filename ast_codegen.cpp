@@ -30,13 +30,6 @@ static std::vector<std::pair<std::string, FunctionExpression*>>& get_deferred_fu
 // Static member definition
 GoTSCompiler* ConstructorDecl::current_compiler_context = nullptr;
 
-// Global compiler context for function registration
-static GoTSCompiler* g_current_compiler = nullptr;
-
-void set_current_compiler(GoTSCompiler* compiler) {
-    g_current_compiler = compiler;
-}
-
 void NumberLiteral::generate_code(CodeGenerator& gen, TypeInference&) {
     gen.emit_mov_reg_imm(0, static_cast<int64_t>(value));
     result_type = DataType::NUMBER;  // JavaScript compatibility: number literals are number (float64)
@@ -671,6 +664,37 @@ void FunctionCall::generate_code(CodeGenerator& gen, TypeInference& types) {
             gen.emit_call("__gots_clear_interval");
             result_type = DataType::BOOLEAN; // Success/failure
             return;
+        } else if (name == "console.log") {
+            // Handle console.log function calls in operator overloads - same as MethodCall handling
+            std::cout << "DEBUG: FunctionCall - handling console.log with " << arguments.size() << " arguments" << std::endl;
+            
+            // Generate first string
+            if (arguments.size() >= 1) {
+                arguments[0]->generate_code(gen, types);
+                gen.emit_call("__console_log_string");
+            }
+            
+            // Generate remaining arguments with spaces between them
+            for (size_t i = 1; i < arguments.size(); i++) {
+                gen.emit_call("__console_log_space");
+                
+                arguments[i]->generate_code(gen, types);
+                
+                // Use type-aware console logging based on argument type
+                DataType arg_type = arguments[i]->result_type;
+                if (arg_type == DataType::STRING) {
+                    gen.emit_call("__console_log_string");
+                } else if (arg_type == DataType::NUMBER || arg_type == DataType::INT64 || arg_type == DataType::FLOAT64) {
+                    gen.emit_call("__console_log_number");
+                } else {
+                    gen.emit_call("__console_log_auto");
+                }
+            }
+            
+            // Add newline at the end
+            gen.emit_call("__console_log_newline");
+            result_type = DataType::UNDEFINED;
+            return;
         }
         
         // Regular function call - use x86-64 calling convention
@@ -730,8 +754,9 @@ void FunctionCall::generate_code(CodeGenerator& gen, TypeInference& types) {
         }
         
         // Look up function return type from compiler registry
-        if (g_current_compiler) {
-            Function* func = g_current_compiler->get_function(name);
+        auto* compiler = get_current_compiler();
+        if (compiler) {
+            Function* func = compiler->get_function(name);
             if (func) {
                 result_type = func->return_type;
                 // std::cout << "DEBUG: Found function '" << name << "' with return type: " 
@@ -1126,86 +1151,6 @@ void FunctionExpression::generate_code(CodeGenerator& gen, TypeInference& types)
     }
 }
 
-// Static method to compile all deferred function expressions
-void compile_deferred_function_expressions(CodeGenerator& gen, TypeInference& types) {
-    // Use the new compilation framework
-    std::cout << "DEBUG: Using new compilation framework instead of legacy deferred system" << std::endl;
-    g_compilation_context.compile_all_functions(gen, types);
-    
-    // Clear the context for next compilation
-    g_compilation_context.clear();
-    
-    // Keep legacy system for backward compatibility (but it should be empty)
-    auto& deferred_functions = get_deferred_functions();
-    
-    std::cout << "DEBUG: Starting universal deferred function compilation system" << std::endl;
-    
-    // QUEUE-BASED PROCESSING: Use a queue to handle infinite nesting levels
-    // This approach is completely immune to additions during processing
-    std::queue<std::pair<std::string, FunctionExpression*>> compilation_queue;
-    
-    // Initialize queue with current functions
-    for (const auto& pair : deferred_functions) {
-        compilation_queue.push(pair);
-    }
-    deferred_functions.clear();
-    
-    int total_compiled = 0;
-    int nesting_level = 0;
-    
-    while (!compilation_queue.empty()) {
-        int current_level_count = compilation_queue.size();
-        std::cout << "DEBUG: Processing nesting level " << nesting_level << " with " << current_level_count << " functions" << std::endl;
-        
-        // Process all functions at current nesting level
-        for (int i = 0; i < current_level_count; i++) {
-            auto pair = compilation_queue.front();
-            compilation_queue.pop();
-            
-            const std::string& func_name = pair.first;
-            FunctionExpression* func_expr = pair.second;
-            
-            // Safety checks
-            if (func_name.empty() || func_name.size() > 1000) {
-                std::cerr << "ERROR: Invalid function name in deferred compilation, skipping" << std::endl;
-                continue;
-            }
-            
-            if (func_expr == nullptr) {
-                std::cerr << "ERROR: Null function expression pointer, skipping" << std::endl;
-                continue;
-            }
-            
-            std::cout << "DEBUG: Compiling function " << func_name << " at nesting level " << nesting_level << std::endl;
-            
-            try {
-                func_expr->compile_function_body(gen, types, func_name);
-                total_compiled++;
-                std::cout << "DEBUG: Successfully compiled " << func_name << std::endl;
-            } catch (const std::exception& e) {
-                std::cerr << "ERROR: Failed to compile " << func_name << ": " << e.what() << std::endl;
-            } catch (...) {
-                std::cerr << "ERROR: Failed to compile " << func_name << ": unknown exception" << std::endl;
-            }
-        }
-        
-        // Add any new functions that were discovered during this level
-        for (const auto& pair : deferred_functions) {
-            compilation_queue.push(pair);
-        }
-        deferred_functions.clear();
-        
-        nesting_level++;
-        
-        // Safety check to prevent infinite loops
-        if (nesting_level > 100) {
-            std::cerr << "ERROR: Maximum nesting depth exceeded (100 levels)" << std::endl;
-            break;
-        }
-    }
-    
-    std::cout << "DEBUG: Universal deferred compilation completed. Total functions compiled: " << total_compiled << " across " << nesting_level << " nesting levels" << std::endl;
-}
 
 void FunctionExpression::compile_function_body(CodeGenerator& gen, TypeInference& types, const std::string& func_name) {
     // Safety check for corrupted function name
@@ -1742,33 +1687,148 @@ void TypedArrayLiteral::generate_code(CodeGenerator& gen, TypeInference& types) 
 
 void ArrayAccess::generate_code(CodeGenerator& gen, TypeInference& types) {
     std::cout << "DEBUG: ArrayAccess::generate_code called" << std::endl;
-    // Generate code for the object expression
-    object->generate_code(gen, types);
     
-    // Save object on stack
-    gen.emit_sub_reg_imm(4, 8);   // sub rsp, 8 (allocate stack space)
-    X86CodeGen* x86_gen = dynamic_cast<X86CodeGen*>(&gen);
-    if (x86_gen) {
-        x86_gen->emit_mov_mem_rsp_reg(0, 0);   // mov [rsp], rax (save object on stack)
+    // First check if the object is a class instance with operator[] overload
+    bool use_operator_overload = false;
+    std::string class_name;
+    
+    // Try to determine if object is a class instance
+    if (auto* var_expr = dynamic_cast<Identifier*>(object.get())) {
+        DataType var_type = types.get_variable_type(var_expr->name);
+        std::cout << "DEBUG: ArrayAccess variable " << var_expr->name << " has type: " << static_cast<int>(var_type) << std::endl;
+        if (var_type == DataType::CLASS_INSTANCE) {
+            class_name = types.get_variable_class_name(var_expr->name);
+            std::cout << "DEBUG: Variable " << var_expr->name << " is CLASS_INSTANCE of class: " << class_name << std::endl;
+            
+            // Check if this class has operator[] overload
+            auto* compiler = get_current_compiler();
+            std::cout << "DEBUG: Checking for operator[] overload in class: " << class_name << std::endl;
+            std::cout << "DEBUG: Looking for TokenType::LBRACKET which has value: " << static_cast<int>(TokenType::LBRACKET) << std::endl;
+            if (compiler) {
+                bool has_overload = compiler->has_operator_overload(class_name, TokenType::LBRACKET);
+                std::cout << "DEBUG: Class " << class_name << " has operator[] overload: " << (has_overload ? "YES" : "NO") << std::endl;
+                if (has_overload) {
+                    use_operator_overload = true;
+                    std::cout << "DEBUG: Using operator[] overload for class " << class_name << std::endl;
+                }
+            } else {
+                std::cout << "DEBUG: No compiler instance available" << std::endl;
+            }
+        }
     }
     
-    // Generate code for the index expression
-    index->generate_code(gen, types);
-    gen.emit_mov_reg_reg(6, 0); // Move index to RSI
-    
-    // Pop object into RDI
-    if (x86_gen) {
-        x86_gen->emit_mov_reg_mem_rsp(7, 0);   // mov rdi, [rsp] (load object from stack)
+    if (use_operator_overload) {
+        // Determine the index expression as a string for type inference
+        std::string index_expr_str = "";
+        if (is_slice_expression) {
+            index_expr_str = slice_expression;
+            std::cout << "DEBUG: Using slice expression: " << index_expr_str << std::endl;
+        } else {
+            // Extract the expression string using the helper method
+            index_expr_str = types.extract_expression_string(index.get());
+            if (index_expr_str.empty()) {
+                index_expr_str = "complex_expression";
+            }
+            std::cout << "DEBUG: Extracted index expression: " << index_expr_str << std::endl;
+        }
+        
+        // Use enhanced type inference to determine the best operator overload
+        DataType index_type = types.infer_operator_index_type(class_name, index_expr_str);
+        std::cout << "DEBUG: Inferred index type: " << static_cast<int>(index_type) << " for expression: " << index_expr_str << std::endl;
+        
+        // Generate argument 0 (object)
+        object->generate_code(gen, types);
+        gen.emit_mov_reg_reg(7, 0);  // Move object to RDI (first parameter)
+        
+        // Generate argument 1 (index/string) and place in RSI
+        if (is_slice_expression) {
+            // For slice expressions, create a string literal directly
+            std::cout << "DEBUG: Generating string literal for slice: '" << slice_expression << "'" << std::endl;
+            auto string_literal = std::make_unique<StringLiteral>(slice_expression);
+            string_literal->generate_code(gen, types);
+        } else {
+            // For normal expressions, evaluate them
+            index->generate_code(gen, types);
+        }
+        gen.emit_mov_reg_reg(6, 0);  // Move string/index to RSI (second parameter)
+        
+        // Find the best operator overload based on the inferred index type
+        auto* compiler = get_current_compiler();
+        if (compiler) {
+            std::vector<DataType> operand_types = {index_type};
+            const auto* best_overload = compiler->find_best_operator_overload(class_name, TokenType::LBRACKET, operand_types);
+            
+            if (best_overload) {
+                // Call the specific operator overload function
+                std::string op_name = best_overload->function_name;
+                std::cout << "DEBUG: Calling best operator overload: " << op_name << std::endl;
+                gen.emit_call(op_name);
+                result_type = best_overload->return_type;
+                std::cout << "DEBUG: Using typed operator overload: " << op_name << " with return type: " << static_cast<int>(result_type) << std::endl;
+            } else {
+                // No typed overload found, try to fall back to ANY overload
+                std::cout << "DEBUG: No typed overload found, trying ANY fallback" << std::endl;
+                
+                // Try ANY type overload as fallback
+                std::vector<DataType> any_operand_types = {DataType::ANY};
+                const auto* any_overload = compiler->find_best_operator_overload(class_name, TokenType::LBRACKET, any_operand_types);
+                
+                if (any_overload) {
+                    std::cout << "DEBUG: Found ANY overload fallback: " << any_overload->function_name << std::endl;
+                    gen.emit_call(any_overload->function_name);
+                    result_type = any_overload->return_type;
+                    std::cout << "DEBUG: Using ANY fallback overload: " << any_overload->function_name << std::endl;
+                } else {
+                    // Last resort: try direct function name construction for compatibility
+                    std::string param_signature;
+                    if (is_slice_expression || index_type == DataType::STRING) {
+                        param_signature = std::to_string(static_cast<int>(DataType::STRING)); // string parameter
+                    } else {
+                        param_signature = "any"; // ANY type parameter
+                    }
+                    
+                    std::string op_function_name = class_name + "::__op_" + std::to_string(static_cast<int>(TokenType::LBRACKET)) + "_any_" + param_signature + "__";
+                    std::cout << "DEBUG: Last resort - calling operator overload directly: " << op_function_name << std::endl;
+                    gen.emit_call(op_function_name);
+                    result_type = DataType::CLASS_INSTANCE; // Assume operator overloads return class instances
+                    std::cout << "DEBUG: Using direct operator overload: " << op_function_name << std::endl;
+                }
+            }
+        } else {
+            result_type = DataType::UNKNOWN;
+        }
+    } else {
+        // Standard array access
+        // Generate code for the object expression
+        object->generate_code(gen, types);
+        
+        // Save object on stack
+        gen.emit_sub_reg_imm(4, 8);   // sub rsp, 8 (allocate stack space)
+        X86CodeGen* x86_gen = dynamic_cast<X86CodeGen*>(&gen);
+        if (x86_gen) {
+            x86_gen->emit_mov_mem_rsp_reg(0, 0);   // mov [rsp], rax (save object on stack)
+        }
+        
+        // Generate code for the index expression
+        index->generate_code(gen, types);
+        gen.emit_mov_reg_reg(6, 0); // Move index to RSI
+        
+        // Pop object into RDI
+        if (x86_gen) {
+            x86_gen->emit_mov_reg_mem_rsp(7, 0);   // mov rdi, [rsp] (load object from stack)
+        }
+        gen.emit_add_reg_imm(4, 8);   // add rsp, 8 (restore stack)
+        
+        // Call array access function
+        std::cout << "DEBUG: About to call __array_access" << std::endl;
+        gen.emit_call("__array_access");
+        std::cout << "DEBUG: Called __array_access" << std::endl;
+        
+        // Result is in RAX
+        result_type = DataType::UNKNOWN; // Array access returns unknown type for JavaScript compatibility
     }
-    gen.emit_add_reg_imm(4, 8);   // add rsp, 8 (restore stack)
     
-    // Call array access function
-    std::cout << "DEBUG: About to call __array_access" << std::endl;
-    gen.emit_call("__array_access");
-    std::cout << "DEBUG: Called __array_access" << std::endl;
-    
-    // Result is in RAX
-    result_type = DataType::UNKNOWN; // Array access returns unknown type for JavaScript compatibility
+    std::cout << "DEBUG: ArrayAccess result_type: " << static_cast<int>(result_type) << std::endl;
 }
 
 void Assignment::generate_code(CodeGenerator& gen, TypeInference& types) {
@@ -1794,16 +1854,20 @@ void Assignment::generate_code(CodeGenerator& gen, TypeInference& types) {
         }
         
         // Handle class instance assignments specially - robust object instance detection
+        std::cout << "DEBUG: Assignment " << variable_name << " - declared_type: " << static_cast<int>(declared_type) 
+                  << ", value->result_type: " << static_cast<int>(value->result_type) << std::endl;
         if (declared_type == DataType::CLASS_INSTANCE || 
             (declared_type == DataType::UNKNOWN && value->result_type == DataType::CLASS_INSTANCE)) {
             auto new_expr = dynamic_cast<NewExpression*>(value.get());
             if (new_expr) {
                 // Set the class type information for this variable
                 types.set_variable_class_type(variable_name, new_expr->class_name);
+                std::cout << "DEBUG: Set variable " << variable_name << " class type to: " << new_expr->class_name << std::endl;
             }
             // ALWAYS set the variable type to CLASS_INSTANCE for object instances
             // This includes both NewExpression and ObjectLiteral
             variable_type = DataType::CLASS_INSTANCE;
+            std::cout << "DEBUG: Set variable " << variable_name << " type to CLASS_INSTANCE" << std::endl;
         }
         
         // Allocate or get the proper stack offset for this variable
@@ -1911,13 +1975,14 @@ void FunctionDecl::generate_code(CodeGenerator& gen, TypeInference& types) {
     }
     
     // Register function with compiler for return type lookup
-    if (g_current_compiler) {
+    auto* compiler = get_current_compiler();
+    if (compiler) {
         Function func;
         func.name = name;
         func.return_type = (return_type == DataType::UNKNOWN) ? DataType::NUMBER : return_type;
         func.parameters = parameters;
         func.stack_size = 0; // Will be filled during execution
-        g_current_compiler->register_function(name, func);
+        compiler->register_function(name, func);
         
         // std::cout << "DEBUG: Registered function '" << name << "' with return type: " 
         //           << static_cast<int>(func.return_type) << std::endl;
@@ -2963,6 +3028,50 @@ void ExportStatement::generate_code(CodeGenerator& gen, TypeInference& types) {
         // Generate code for the exported declaration
         declaration->generate_code(gen, types);
         // Mark the declared item as exported
+    }
+}
+
+void OperatorOverloadDecl::generate_code(CodeGenerator& gen, TypeInference& types) {
+    // Generate operator overload function with unique name based on parameter types
+    std::string param_signature = "";
+    for (size_t i = 0; i < parameters.size(); ++i) {
+        if (i > 0) param_signature += "_";
+        if (parameters[i].type == DataType::UNKNOWN) {
+            param_signature += "any";
+        } else {
+            param_signature += std::to_string(static_cast<int>(parameters[i].type));
+        }
+    }
+    
+    std::string op_function_name = class_name + "::__op_" + std::to_string(static_cast<int>(operator_type)) + "_" + param_signature + "__";
+    
+    // Generate function label
+    gen.emit_label(op_function_name);
+    gen.emit_prologue();
+    
+    // Generate function body
+    for (const auto& stmt : body) {
+        stmt->generate_code(gen, types);
+    }
+    
+    // Ensure there's a return value in RAX
+    gen.emit_mov_reg_imm(0, 0); // Default return 0
+    
+    gen.emit_epilogue();
+    
+    // Register the operator overload with the compiler
+    auto* compiler = get_current_compiler();
+    if (compiler) {
+        OperatorOverload overload(operator_type, parameters, return_type);
+        overload.function_name = op_function_name;
+        std::cout << "DEBUG: Registering operator overload " << op_function_name 
+                  << " for class " << class_name << " with operator type " << static_cast<int>(operator_type) << std::endl;
+        compiler->register_operator_overload(class_name, overload);
+        
+        // Verify registration
+        bool has_overload = compiler->has_operator_overload(class_name, operator_type);
+        std::cout << "DEBUG: After registration, class " << class_name << " has operator type " 
+                  << static_cast<int>(operator_type) << " overload: " << (has_overload ? "YES" : "NO") << std::endl;
     }
 }
 

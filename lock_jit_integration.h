@@ -4,6 +4,7 @@
 #include "lock_system.h"
 #include <string>
 #include <unordered_map>
+#include <functional>
 
 namespace gots {
 

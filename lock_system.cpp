@@ -1,4 +1,5 @@
 #include "lock_system.h"
+#include "goroutine_system.h"
 #include <cassert>
 #include <thread>
 #include <stdexcept>
@@ -229,7 +230,7 @@ void Lock::yield_to_scheduler_if_needed() {
     auto current_goroutine = get_current_goroutine();
     if (current_goroutine) {
         // Signal that this goroutine is waiting
-        current_goroutine->yield();
+        current_goroutine->trigger_event_loop();
     } else {
         // Fallback for non-goroutine threads
         std::this_thread::yield();
@@ -242,7 +243,7 @@ void Lock::notify_goroutine_scheduler() {
     // which goroutines to run next
     auto current_goroutine = get_current_goroutine();
     if (current_goroutine) {
-        current_goroutine->notify_scheduler();
+        current_goroutine->trigger_event_loop();
     }
 }
 
