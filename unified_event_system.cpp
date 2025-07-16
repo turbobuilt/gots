@@ -25,7 +25,6 @@ uint64_t GlobalTimerSystem::set_timeout(uint64_t goroutine_id,
     
     // Wrap callback to handle lifecycle
     auto wrapped_callback = [goroutine_id, timer_id, callback = std::move(callback)]() {
-        std::cout << "DEBUG: Executing timer " << timer_id << " for goroutine " << goroutine_id << std::endl;
         
         try {
             callback();
@@ -49,7 +48,6 @@ uint64_t GlobalTimerSystem::set_timeout(uint64_t goroutine_id,
     // Register timer with main controller
     MainThreadController::instance().timer_started(goroutine_id, timer_id);
     
-    std::cout << "DEBUG: Set timeout " << timer_id << " for " << delay_ms << "ms on goroutine " << goroutine_id << std::endl;
     return timer_id;
 }
 
@@ -62,7 +60,6 @@ uint64_t GlobalTimerSystem::set_interval(uint64_t goroutine_id,
     
     // Wrap callback to handle lifecycle and rescheduling
     std::function<void()> wrapped_callback = [this, goroutine_id, timer_id, callback, interval_duration]() {
-        std::cout << "DEBUG: Executing interval " << timer_id << " for goroutine " << goroutine_id << std::endl;
         
         try {
             callback();
@@ -99,7 +96,6 @@ uint64_t GlobalTimerSystem::set_interval(uint64_t goroutine_id,
     // Register timer with main controller
     MainThreadController::instance().timer_started(goroutine_id, timer_id);
     
-    std::cout << "DEBUG: Set interval " << timer_id << " for " << interval_ms << "ms on goroutine " << goroutine_id << std::endl;
     return timer_id;
 }
 
@@ -118,7 +114,6 @@ bool GlobalTimerSystem::clear_timer(uint64_t timer_id) {
         // Notify main controller
         MainThreadController::instance().timer_completed(goroutine_id, timer_id);
         
-        std::cout << "DEBUG: Cleared timer " << timer_id << std::endl;
         
         // Wake up event loop to process cancellation
         timer_cv_.notify_one();
@@ -217,14 +212,12 @@ void MainThreadController::goroutine_started(uint64_t goroutine_id, std::shared_
     }
     
     int count = active_goroutines_.fetch_add(1) + 1;
-    std::cout << "DEBUG: Goroutine " << goroutine_id << " started. Active: " << count << std::endl;
 }
 
 void MainThreadController::goroutine_completed(uint64_t goroutine_id) {
     cleanup_goroutine_references(goroutine_id);
     
     int count = active_goroutines_.fetch_sub(1) - 1;
-    std::cout << "DEBUG: Goroutine " << goroutine_id << " completed. Active: " << count << std::endl;
     
     if (count == 0) {
         check_exit_condition();
@@ -238,7 +231,6 @@ void MainThreadController::timer_started(uint64_t goroutine_id, uint64_t timer_i
     }
     
     int count = pending_timers_.fetch_add(1) + 1;
-    std::cout << "DEBUG: Timer " << timer_id << " started for goroutine " << goroutine_id << ". Pending: " << count << std::endl;
 }
 
 void MainThreadController::timer_completed(uint64_t goroutine_id, uint64_t timer_id) {
@@ -254,7 +246,6 @@ void MainThreadController::timer_completed(uint64_t goroutine_id, uint64_t timer
     }
     
     int count = pending_timers_.fetch_sub(1) - 1;
-    std::cout << "DEBUG: Timer " << timer_id << " completed for goroutine " << goroutine_id << ". Pending: " << count << std::endl;
     
     if (count == 0) {
         check_exit_condition();
@@ -263,12 +254,10 @@ void MainThreadController::timer_completed(uint64_t goroutine_id, uint64_t timer
 
 void MainThreadController::io_operation_started() {
     int count = active_io_operations_.fetch_add(1) + 1;
-    std::cout << "DEBUG: I/O operation started. Active: " << count << std::endl;
 }
 
 void MainThreadController::io_operation_completed() {
     int count = active_io_operations_.fetch_sub(1) - 1;
-    std::cout << "DEBUG: I/O operation completed. Active: " << count << std::endl;
     
     if (count == 0) {
         check_exit_condition();
@@ -276,15 +265,10 @@ void MainThreadController::io_operation_completed() {
 }
 
 void MainThreadController::wait_for_completion() {
-    std::cout << "DEBUG: Main thread waiting for completion..." << std::endl;
-    std::cout << "DEBUG: Active goroutines: " << active_goroutines_.load() << std::endl;
-    std::cout << "DEBUG: Pending timers: " << pending_timers_.load() << std::endl;
-    std::cout << "DEBUG: Active I/O: " << active_io_operations_.load() << std::endl;
     
     std::unique_lock<std::mutex> lock(exit_mutex_);
     exit_cv_.wait(lock, [this]() { return should_exit_.load(); });
     
-    std::cout << "DEBUG: Main thread exit condition met" << std::endl;
 }
 
 void MainThreadController::force_exit() {
@@ -298,7 +282,6 @@ void MainThreadController::check_exit_condition() {
                        active_io_operations_.load() == 0);
     
     if (should_exit) {
-        std::cout << "DEBUG: All work complete, signaling main thread exit" << std::endl;
         should_exit_.store(true);
         exit_cv_.notify_all();
     }
@@ -315,7 +298,6 @@ void MainThreadController::cleanup_goroutine_references(uint64_t goroutine_id) {
     if (it != pending_timers_per_goroutine_.end()) {
         for (uint64_t timer_id : it->second) {
             pending_timers_.fetch_sub(1);
-            std::cout << "DEBUG: Cleaned up timer " << timer_id << " for completed goroutine " << goroutine_id << std::endl;
         }
         pending_timers_per_goroutine_.erase(it);
     }
@@ -327,29 +309,24 @@ void MainThreadController::cleanup_goroutine_references(uint64_t goroutine_id) {
 
 void GlobalEventLoop::start(WorkStealingScheduler* scheduler) {
     if (running_.exchange(true)) {
-        std::cout << "DEBUG: GlobalEventLoop already running" << std::endl;
         return;
     }
     
     scheduler_ = scheduler;
     event_thread_ = std::thread(&GlobalEventLoop::event_loop, this);
-    std::cout << "DEBUG: GlobalEventLoop started" << std::endl;
 }
 
 void GlobalEventLoop::stop() {
     if (!running_.exchange(false)) {
-        std::cout << "DEBUG: GlobalEventLoop not running" << std::endl;
         return;
     }
     
     if (event_thread_.joinable()) {
         event_thread_.join();
     }
-    std::cout << "DEBUG: GlobalEventLoop stopped" << std::endl;
 }
 
 void GlobalEventLoop::event_loop() {
-    std::cout << "DEBUG: GlobalEventLoop thread started - efficient mode" << std::endl;
     
     while (running_.load()) {
         try {
@@ -369,7 +346,6 @@ void GlobalEventLoop::event_loop() {
         }
     }
     
-    std::cout << "DEBUG: GlobalEventLoop thread exiting" << std::endl;
 }
 
 // ============================================================================
@@ -379,20 +355,17 @@ void GlobalEventLoop::event_loop() {
 void GoroutineManager::register_goroutine(uint64_t goroutine_id, std::shared_ptr<Goroutine> goroutine) {
     std::lock_guard<std::mutex> lock(mutex_);
     active_goroutines_[goroutine_id] = goroutine;
-    std::cout << "DEBUG: GoroutineManager registered goroutine " << goroutine_id << std::endl;
 }
 
 void GoroutineManager::unregister_goroutine(uint64_t goroutine_id) {
     std::lock_guard<std::mutex> lock(mutex_);
     active_goroutines_.erase(goroutine_id);
     pending_timers_per_goroutine_.erase(goroutine_id);
-    std::cout << "DEBUG: GoroutineManager unregistered goroutine " << goroutine_id << std::endl;
 }
 
 void GoroutineManager::add_timer_reference(uint64_t goroutine_id, uint64_t timer_id) {
     std::lock_guard<std::mutex> lock(mutex_);
     pending_timers_per_goroutine_[goroutine_id].insert(timer_id);
-    std::cout << "DEBUG: GoroutineManager added timer reference " << timer_id << " for goroutine " << goroutine_id << std::endl;
 }
 
 void GoroutineManager::remove_timer_reference(uint64_t goroutine_id, uint64_t timer_id) {
@@ -404,7 +377,6 @@ void GoroutineManager::remove_timer_reference(uint64_t goroutine_id, uint64_t ti
             pending_timers_per_goroutine_.erase(it);
         }
     }
-    std::cout << "DEBUG: GoroutineManager removed timer reference " << timer_id << " for goroutine " << goroutine_id << std::endl;
 }
 
 std::shared_ptr<Goroutine> GoroutineManager::get_goroutine(uint64_t goroutine_id) {
@@ -429,7 +401,6 @@ void GoroutineManager::cleanup_completed_goroutines() {
     auto it = active_goroutines_.begin();
     while (it != active_goroutines_.end()) {
         if (it->second->is_completed()) {
-            std::cout << "DEBUG: Cleaning up completed goroutine " << it->first << std::endl;
             it = active_goroutines_.erase(it);
         } else {
             ++it;
@@ -443,21 +414,14 @@ void GoroutineManager::cleanup_completed_goroutines() {
 
 Goroutine::Goroutine(uint64_t id, std::shared_ptr<LexicalEnvironment> env) 
     : id_(id), lexical_env_(env) {
-    if (lexical_env_) {
-        lexical_env_->add_ref();
-    }
-    std::cout << "DEBUG: Created goroutine " << id_ << std::endl;
+    // shared_ptr handles reference counting automatically
 }
 
 Goroutine::~Goroutine() {
-    if (lexical_env_) {
-        lexical_env_->release();
-    }
-    std::cout << "DEBUG: Destroyed goroutine " << id_ << std::endl;
+    // shared_ptr handles reference counting automatically
 }
 
 void Goroutine::run() {
-    std::cout << "DEBUG: Goroutine " << id_ << " starting execution" << std::endl;
     
     // Set thread-local context
     set_current_goroutine(shared_from_this());
@@ -471,7 +435,6 @@ void Goroutine::run() {
         }
         
         state_.store(GoroutineState::COMPLETED);
-        std::cout << "DEBUG: Goroutine " << id_ << " completed successfully" << std::endl;
         
     } catch (const std::exception& e) {
         state_.store(GoroutineState::FAILED);
@@ -484,7 +447,6 @@ void Goroutine::run() {
     // Notify main controller
     MainThreadController::instance().goroutine_completed(id_);
     
-    std::cout << "DEBUG: Goroutine " << id_ << " execution finished" << std::endl;
 }
 
 std::shared_ptr<Goroutine> Goroutine::spawn_child(std::function<void()> task) {
@@ -503,7 +465,6 @@ std::shared_ptr<Goroutine> Goroutine::spawn_child(std::function<void()> task) {
     
     child_count_.fetch_add(1);
     
-    std::cout << "DEBUG: Goroutine " << id_ << " spawned child goroutine " << child_id << std::endl;
     
     // Register with systems
     GoroutineManager::instance().register_goroutine(child_id, child);
@@ -514,17 +475,14 @@ std::shared_ptr<Goroutine> Goroutine::spawn_child(std::function<void()> task) {
 
 void Goroutine::child_completed() {
     int remaining = child_count_.fetch_sub(1) - 1;
-    std::cout << "DEBUG: Goroutine " << id_ << " child completed. Remaining children: " << remaining << std::endl;
 }
 
 void Goroutine::suspend() {
     state_.store(GoroutineState::SUSPENDED);
-    std::cout << "DEBUG: Goroutine " << id_ << " suspended" << std::endl;
 }
 
 void Goroutine::resume() {
     state_.store(GoroutineState::RUNNING);
-    std::cout << "DEBUG: Goroutine " << id_ << " resumed" << std::endl;
 }
 
 // ============================================================================
@@ -548,16 +506,13 @@ std::shared_ptr<LexicalEnvironment> get_current_lexical_env() {
 }
 
 void initialize_unified_event_system() {
-    std::cout << "DEBUG: Initializing unified event system" << std::endl;
     
     // Initialize global event loop
     GlobalEventLoop::instance().start(nullptr);
     
-    std::cout << "DEBUG: Unified event system initialized" << std::endl;
 }
 
 void shutdown_unified_event_system() {
-    std::cout << "DEBUG: Shutting down unified event system" << std::endl;
     
     // Stop global event loop
     GlobalEventLoop::instance().stop();
@@ -565,7 +520,6 @@ void shutdown_unified_event_system() {
     // Force exit main thread if needed
     MainThreadController::instance().force_exit();
     
-    std::cout << "DEBUG: Unified event system shut down" << std::endl;
 }
 
 } // namespace gots

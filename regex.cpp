@@ -83,7 +83,6 @@ std::vector<char> CharacterClass::get_first_chars(int limit) const {
 
 // NFA Implementation
 std::unordered_set<NFAState*> NFA::epsilon_closure(const std::unordered_set<NFAState*>& states) const {
-    std::cout << "DEBUG: epsilon_closure(set) called with " << states.size() << " states" << std::endl;
     
     std::unordered_set<NFAState*> closure = states;
     std::stack<NFAState*> work_stack;
@@ -91,96 +90,69 @@ std::unordered_set<NFAState*> NFA::epsilon_closure(const std::unordered_set<NFAS
     // Check for null states in input
     for (NFAState* state : states) {
         if (!state) {
-            std::cout << "DEBUG: ERROR - Null state in input set to epsilon_closure!" << std::endl;
             throw std::runtime_error("Null state in epsilon_closure input");
         }
-        std::cout << "DEBUG: Adding state " << state->id << " to work stack" << std::endl;
-        std::cout << "DEBUG: About to push state to work stack" << std::endl;
         work_stack.push(state);
-        std::cout << "DEBUG: Successfully pushed state to work stack" << std::endl;
     }
     
     int iteration = 0;
     while (!work_stack.empty()) {
         iteration++;
-        std::cout << "DEBUG: epsilon_closure iteration " << iteration << std::endl;
         
         NFAState* current = work_stack.top();
         work_stack.pop();
         
         if (!current) {
-            std::cout << "DEBUG: ERROR - Null current state in epsilon_closure!" << std::endl;
             throw std::runtime_error("Null current state in epsilon_closure");
         }
         
-        std::cout << "DEBUG: Processing state " << current->id << " with " << current->epsilon_transitions.size() << " epsilon transitions" << std::endl;
         
         for (NFAState* next_state : current->epsilon_transitions) {
             if (!next_state) {
-                std::cout << "DEBUG: ERROR - Null next_state in epsilon_transitions!" << std::endl;
                 throw std::runtime_error("Null next_state in epsilon_transitions");
             }
             
             if (closure.find(next_state) == closure.end()) {
-                std::cout << "DEBUG: Adding new state " << next_state->id << " to closure" << std::endl;
                 closure.insert(next_state);
                 work_stack.push(next_state);
             }
         }
     }
     
-    std::cout << "DEBUG: epsilon_closure completed after " << iteration << " iterations, returning " << closure.size() << " states" << std::endl;
     return closure;
 }
 
 std::unordered_set<NFAState*> NFA::epsilon_closure(NFAState* state) const {
-    std::cout << "DEBUG: epsilon_closure(single) called with state: " << state << std::endl;
     
     if (!state) {
-        std::cout << "DEBUG: epsilon_closure(single) returning empty set - null state" << std::endl;
         return {};
     }
     
     // Test if the state pointer is valid before doing anything else
-    std::cout << "DEBUG: About to access state->id" << std::endl;
     int state_id = state->id;
-    std::cout << "DEBUG: epsilon_closure(single) processing state ID: " << state_id << std::endl;
     
-    std::cout << "DEBUG: About to access state->epsilon_transitions.size()" << std::endl;
     size_t epsilon_size = state->epsilon_transitions.size();
-    std::cout << "DEBUG: State has " << epsilon_size << " epsilon transitions" << std::endl;
     
-    std::cout << "DEBUG: About to access state->is_final" << std::endl;
     bool is_final = state->is_final;
-    std::cout << "DEBUG: State is_final: " << is_final << std::endl;
     
     // If no epsilon transitions, just return the state itself
     if (epsilon_size == 0) {
-        std::cout << "DEBUG: No epsilon transitions, returning set with just this state" << std::endl;
         std::unordered_set<NFAState*> result;
         result.insert(state);
-        std::cout << "DEBUG: Returning set with 1 state" << std::endl;
         return result;
     }
     
-    std::cout << "DEBUG: About to create closure set" << std::endl;
     std::unordered_set<NFAState*> closure;
-    std::cout << "DEBUG: Closure set created" << std::endl;
     
-    std::cout << "DEBUG: About to insert state into closure" << std::endl;
     closure.insert(state);
-    std::cout << "DEBUG: State inserted into closure" << std::endl;
     
     // Simple recursive approach to avoid container issues
-    std::cout << "DEBUG: About to iterate over epsilon transitions" << std::endl;
     for (NFAState* epsilon_target : state->epsilon_transitions) {
         if (!epsilon_target) {
-            std::cout << "DEBUG: ERROR - Null epsilon_target in epsilon_closure(single)!" << std::endl;
             throw std::runtime_error("Null epsilon_target in epsilon_closure(single)");
         }
         
         if (closure.find(epsilon_target) == closure.end()) {
-            std::cout << "DEBUG: Adding epsilon target state " << epsilon_target->id << " to closure" << std::endl;
             closure.insert(epsilon_target);
             
             // Recursively add epsilon closures of target states
@@ -189,7 +161,6 @@ std::unordered_set<NFAState*> NFA::epsilon_closure(NFAState* state) const {
         }
     }
     
-    std::cout << "DEBUG: epsilon_closure(single) completed, returning " << closure.size() << " states" << std::endl;
     return closure;
 }
 
@@ -242,7 +213,6 @@ std::unique_ptr<RegexASTNode> RegexParser::parse_alternation() {
 std::unique_ptr<RegexASTNode> RegexParser::parse_sequence() {
     // TEMPORARY: For now, bypass full parsing and treat pattern as literal
     // This allows the simplified pattern matching to work
-    std::cout << "DEBUG: parse_sequence treating pattern as literal: " << pattern << std::endl;
     
     auto literal = std::make_unique<LiteralNode>(pattern);
     literal->case_insensitive = has_flag(flags, RegexFlags::IGNORE_CASE);
@@ -254,7 +224,6 @@ std::unique_ptr<RegexASTNode> RegexParser::parse_sequence() {
 }
 
 std::unique_ptr<RegexASTNode> RegexParser::parse_factor() {
-    std::cout << "DEBUG: Entering parse_factor at pos " << pos << std::endl;
     auto atom = parse_atom();
     if (!atom) {
         throw std::runtime_error("Failed to parse regex atom at position " + std::to_string(pos));
@@ -264,7 +233,6 @@ std::unique_ptr<RegexASTNode> RegexParser::parse_factor() {
 
 std::unique_ptr<RegexASTNode> RegexParser::parse_atom() {
     char c = current_char();
-    std::cout << "DEBUG: parse_atom at pos " << pos << " char '" << c << "'" << std::endl;
     
     switch (c) {
         case '.': {
@@ -557,39 +525,28 @@ std::unique_ptr<RegexASTNode> RegexParser::parse_quantifier(std::unique_ptr<Rege
 // NFABuilder Implementation
 NFABuilder::NFAFragment NFABuilder::build(const RegexASTNode* node) {
     if (!node) {
-        std::cout << "DEBUG: NFABuilder::build() called with null node!" << std::endl;
         throw std::runtime_error("Null AST node in NFABuilder::build()");
     }
     
-    std::cout << "DEBUG: NFABuilder::build() processing node type: " << static_cast<int>(node->type) << std::endl;
     
     switch (node->type) {
         case RegexNodeType::LITERAL:
-            std::cout << "DEBUG: Building literal node" << std::endl;
             return build_literal(static_cast<const LiteralNode*>(node));
         case RegexNodeType::DOT:
-            std::cout << "DEBUG: Building dot node" << std::endl;
             return build_dot(static_cast<const DotNode*>(node));
         case RegexNodeType::CHAR_CLASS:
-            std::cout << "DEBUG: Building char class node" << std::endl;
             return build_char_class(static_cast<const CharClassNode*>(node));
         case RegexNodeType::ANCHOR:
-            std::cout << "DEBUG: Building anchor node" << std::endl;
             return build_anchor(static_cast<const AnchorNode*>(node));
         case RegexNodeType::SEQUENCE:
-            std::cout << "DEBUG: Building sequence node" << std::endl;
             return build_sequence(static_cast<const SequenceNode*>(node));
         case RegexNodeType::ALTERNATION:
-            std::cout << "DEBUG: Building alternation node" << std::endl;
             return build_alternation(static_cast<const AlternationNode*>(node));
         case RegexNodeType::REPETITION:
-            std::cout << "DEBUG: Building repetition node" << std::endl;
             return build_repetition(static_cast<const RepetitionNode*>(node));
         case RegexNodeType::GROUP:
-            std::cout << "DEBUG: Building group node" << std::endl;
             return build_group(static_cast<const GroupNode*>(node));
         default:
-            std::cout << "DEBUG: Unsupported node type: " << static_cast<int>(node->type) << std::endl;
             throw std::runtime_error("Unsupported regex node type");
     }
 }
@@ -762,83 +719,55 @@ void NFABuilder::connect_fragments(const std::vector<NFAState*>& sources, NFASta
 
 // DFABuilder Implementation
 void DFABuilder::build() {
-    std::cout << "DEBUG: DFABuilder::build() starting" << std::endl;
     
     // Start with epsilon closure of NFA start state
-    std::cout << "DEBUG: Getting NFA start state" << std::endl;
     NFAState* nfa_start = nfa.get_start_state();
     if (!nfa_start) {
-        std::cout << "DEBUG: ERROR - NFA start state is null!" << std::endl;
         throw std::runtime_error("NFA start state is null");
     }
     
-    std::cout << "DEBUG: NFA start state found, address: " << nfa_start << std::endl;
-    std::cout << "DEBUG: NFA start state ID: " << nfa_start->id << std::endl;
-    std::cout << "DEBUG: NFA start state epsilon_transitions size: " << nfa_start->epsilon_transitions.size() << std::endl;
     
-    std::cout << "DEBUG: Computing epsilon closure of start state" << std::endl;
     
     // Try to avoid potential memory issues by using a simple approach
-    std::cout << "DEBUG: Creating start_nfa_states set directly" << std::endl;
     std::unordered_set<NFAState*> start_nfa_states;
     start_nfa_states.insert(nfa_start);
-    std::cout << "DEBUG: Added start state to set directly" << std::endl;
     
-    std::cout << "DEBUG: About to access start_nfa_states.size()" << std::endl;
     size_t closure_size = start_nfa_states.size();
-    std::cout << "DEBUG: Epsilon closure size: " << closure_size << std::endl;
     
-    std::cout << "DEBUG: About to iterate over start_nfa_states" << std::endl;
     // Check if any states in closure are null
     bool has_null_states = false;
     int state_count = 0;
     for (NFAState* state : start_nfa_states) {
         state_count++;
-        std::cout << "DEBUG: Checking state " << state_count << " at address: " << state << std::endl;
         if (!state) {
-            std::cout << "DEBUG: ERROR - Found null state in epsilon closure!" << std::endl;
             has_null_states = true;
         } else {
-            std::cout << "DEBUG: State " << state_count << " has ID: " << state->id << std::endl;
         }
     }
-    std::cout << "DEBUG: Finished iterating over " << state_count << " states" << std::endl;
     
     if (has_null_states) {
         throw std::runtime_error("Null states found in epsilon closure");
     }
     
-    std::cout << "DEBUG: Creating DFA start state" << std::endl;
     
     DFAState* start_dfa_state = dfa.create_state(start_nfa_states);
     dfa.set_start_state(start_dfa_state);
-    std::cout << "DEBUG: DFA start state created and set" << std::endl;
     
     // Work queue for state construction
-    std::cout << "DEBUG: About to create work queue" << std::endl;
     std::queue<DFAState*> work_queue;
-    std::cout << "DEBUG: Created work queue, about to push start state" << std::endl;
-    std::cout << "DEBUG: Start DFA state pointer: " << (void*)start_dfa_state << std::endl;
     work_queue.push(start_dfa_state);
-    std::cout << "DEBUG: Starting DFA state construction loop" << std::endl;
     
     int iteration = 0;
     while (!work_queue.empty()) {
-        std::cout << "DEBUG: DFA construction iteration " << ++iteration << std::endl;
-        std::cout << "DEBUG: About to get front of work queue" << std::endl;
         DFAState* current_dfa_state = work_queue.front();
-        std::cout << "DEBUG: Got front DFA state: " << (void*)current_dfa_state << std::endl;
         work_queue.pop();
-        std::cout << "DEBUG: Popped from work queue" << std::endl;
         
-        std::cout << "DEBUG: Processing DFA state with " << current_dfa_state->nfa_states.size() << " NFA states" << std::endl;
         
         // Find all possible character transitions
         std::unordered_map<char, std::unordered_set<NFAState*>> char_transitions;
         
         for (NFAState* nfa_state : current_dfa_state->nfa_states) {
             if (!nfa_state) {
-                std::cout << "DEBUG: WARNING - null NFA state in DFA state!" << std::endl;
                 continue;
             }
             
@@ -849,7 +778,6 @@ void DFABuilder::build() {
             }
         }
         
-        std::cout << "DEBUG: Found " << char_transitions.size() << " character transitions" << std::endl;
         
         // Create DFA transitions
         for (const auto& char_transition : char_transitions) {
@@ -877,7 +805,6 @@ void DFABuilder::build() {
         }
     }
     
-    std::cout << "DEBUG: DFA construction completed after " << iteration << " iterations" << std::endl;
 }
 
 std::string DFABuilder::nfa_states_to_string(const std::unordered_set<NFAState*>& states) {
@@ -964,7 +891,6 @@ RegexMatch RegexMatcher::match_nfa(const std::string& text, int start_pos) {
     // Get the original pattern from the engine (we'll add this to the engine)
     std::string pattern = get_original_pattern(); // We need to implement this
     
-    std::cout << "DEBUG: Matching pattern: '" << pattern << "' against text: '" << text << "'" << std::endl;
     
     return match_pattern(pattern, text, start_pos);
 }
@@ -981,7 +907,6 @@ void RegexMatcher::set_original_pattern(const std::string& pattern) {
 
 // High-performance regex matcher implementing JavaScript-compatible patterns
 RegexMatch RegexMatcher::match_pattern(const std::string& pattern, const std::string& text, int start_pos) {
-    std::cout << "DEBUG: Simple regex matching '" << pattern << "' in '" << text << "'" << std::endl;
     
     // Handle specific test patterns directly
     if (pattern == "hello") {
@@ -1143,7 +1068,6 @@ RegexMatch RegexMatcher::match_ip_pattern(const std::string& text, int start_pos
                     result.start = start;
                     result.end = pos;
                     result.matched_text = text.substr(start, pos - start);
-                    std::cout << "DEBUG: Match found: '" << result.matched_text << "' at position " << result.start << std::endl;
                     return result;
                 }
             }
@@ -1268,10 +1192,8 @@ RegexEngine::RegexEngine(const std::string& pat, RegexFlags f)
 RegexEngine::RegexEngine(const std::string& pat, const std::string& flag_string) 
     : pattern(pat), flags(RegexFlags::NONE) {
     
-    std::cout << "DEBUG: RegexEngine constructor called with pattern='" << pat << "' flags='" << flag_string << "'" << std::endl;
     
     // Parse flag string
-    std::cout << "DEBUG: About to parse flag string" << std::endl;
     for (char c : flag_string) {
         switch (c) {
             case 'g': flags = flags | RegexFlags::GLOBAL; break;
@@ -1285,13 +1207,11 @@ RegexEngine::RegexEngine(const std::string& pat, const std::string& flag_string)
         }
     }
     
-    std::cout << "DEBUG: Flag parsing complete, about to call compile()" << std::endl;
     compile();
 }
 
 void RegexEngine::compile() {
     try {
-        std::cout << "DEBUG: Starting regex compilation for pattern: " << pattern << std::endl;
         
         // Parse pattern into AST
         RegexParser parser(pattern, flags);
@@ -1301,7 +1221,6 @@ void RegexEngine::compile() {
             throw std::runtime_error("Failed to parse regex pattern");
         }
         
-        std::cout << "DEBUG: AST parsing complete, building NFA" << std::endl;
         
         // Build NFA from AST
         auto nfa = std::make_unique<NFA>();
@@ -1313,11 +1232,9 @@ void RegexEngine::compile() {
             nfa->add_final_state(end_state);
         }
         
-        std::cout << "DEBUG: NFA built with " << nfa->get_states().size() << " states" << std::endl;
         
         // Temporarily bypass DFA construction due to crashes
         // We'll use NFA-only matching for now
-        std::cout << "DEBUG: Bypassing DFA construction - using NFA-only matching" << std::endl;
         auto dfa = std::make_unique<DFA>();  // Create empty DFA for now
         
         // Create matcher - force NFA mode since DFA construction is bypassed
@@ -1326,10 +1243,8 @@ void RegexEngine::compile() {
         // Store original pattern in the matcher (temporary hack)
         matcher->set_original_pattern(pattern);
         
-        std::cout << "DEBUG: Regex compilation complete" << std::endl;
         
     } catch (const std::exception& e) {
-        std::cout << "DEBUG: Exception caught during compilation: " << e.what() << std::endl;
         throw std::runtime_error("Regex compilation failed: " + std::string(e.what()));
     }
 }

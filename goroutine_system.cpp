@@ -49,7 +49,6 @@ void Goroutine::start() {
 
 void Goroutine::increment_child_count() {
     child_count_.fetch_add(1);
-    std::cout << "DEBUG: Goroutine " << id_ << " child count increased to " << child_count_.load() << std::endl;
     
     // Add child as async operation to keep event loop running
     child_async_op_id_ = add_async_operation(AsyncOpType::CHILD_GOROUTINE);
@@ -57,7 +56,6 @@ void Goroutine::increment_child_count() {
 
 void Goroutine::decrement_child_count() {
     int old_count = child_count_.fetch_sub(1);
-    std::cout << "DEBUG: Goroutine " << id_ << " child count decreased to " << (old_count - 1) << std::endl;
     
     // If no more children, complete the child async operation
     if (old_count == 1) { // old_count was 1, now it's 0
@@ -72,12 +70,10 @@ void Goroutine::run() {
     // Set thread-local current goroutine
     current_goroutine = shared_from_this();
     
-    std::cout << "DEBUG: Goroutine " << id_ << " starting execution" << std::endl;
     
     try {
         // Execute the main task
         task_();
-        std::cout << "DEBUG: Goroutine " << id_ << " main task completed" << std::endl;
     } catch (const std::exception& e) {
         std::cerr << "ERROR: Goroutine " << id_ << " exception: " << e.what() << std::endl;
     } catch (...) {
@@ -86,18 +82,15 @@ void Goroutine::run() {
     
     // After main code execution, run the event loop like Node.js
     // This handles timers, children, server handles, etc.
-    std::cout << "DEBUG: Goroutine " << id_ << " entering event loop" << std::endl;
     run_event_loop();
     
     state_ = GoroutineState::COMPLETED;
-    std::cout << "DEBUG: Goroutine " << id_ << " completed" << std::endl;
     
     // Notify parent that we're done
     on_child_completed();
     
     // If this is the main goroutine, signal completion
     if (is_main_goroutine_) {
-        std::cout << "DEBUG: Main goroutine completed - signaling main thread" << std::endl;
         GoroutineScheduler::instance().signal_main_goroutine_completion();
     }
     
@@ -107,7 +100,6 @@ void Goroutine::run() {
 
 // Node.js-style event loop - handles ALL async operations
 void Goroutine::run_event_loop() {
-    std::cout << "DEBUG: Goroutine " << id_ << " event loop started" << std::endl;
     
     while (!should_exit_.load()) {
         std::unique_lock<std::mutex> lock(event_loop_mutex_);
@@ -116,7 +108,6 @@ void Goroutine::run_event_loop() {
         bool has_work = has_active_operations();
         
         if (!has_work) {
-            std::cout << "DEBUG: Goroutine " << id_ << " event loop: no active operations, exiting" << std::endl;
             break;
         }
         
@@ -132,7 +123,6 @@ void Goroutine::run_event_loop() {
                     remaining_timers.push_back(timer);
                 } else {
                     g_cancelled_timers.erase(timer.id);
-                    std::cout << "DEBUG: Removed cancelled timer " << timer.id << std::endl;
                 }
             }
         }
@@ -164,7 +154,6 @@ void Goroutine::run_event_loop() {
             lock.unlock();
             
             for (const auto& timer : ready_timers) {
-                std::cout << "DEBUG: Executing timer " << timer.id << std::endl;
                 
                 // Reschedule if interval timer (reacquire lock briefly)
                 if (timer.is_interval) {
@@ -173,16 +162,13 @@ void Goroutine::run_event_loop() {
                         Timer rescheduled_timer = timer;
                         rescheduled_timer.execute_time = now + std::chrono::milliseconds(timer.interval_ms);
                         timer_queue_.push(rescheduled_timer);
-                        std::cout << "DEBUG: Rescheduled interval timer " << timer.id << std::endl;
                     }
                 }
                 
                 try {
-                    std::cout << "DEBUG: About to execute timer callback for timer " << timer.id << std::endl;
                     typedef void (*TimerCallback)();
                     TimerCallback callback = reinterpret_cast<TimerCallback>(timer.function_address);
                     callback();
-                    std::cout << "DEBUG: Timer " << timer.id << " completed" << std::endl;
                 } catch (const std::exception& e) {
                     std::cerr << "ERROR: Timer " << timer.id << " exception: " << e.what() << std::endl;
                 } catch (...) {
@@ -196,19 +182,16 @@ void Goroutine::run_event_loop() {
         
         // Wait for next event (timer or trigger)
         if (has_timer) {
-            std::cout << "DEBUG: Event loop waiting until next timer" << std::endl;
             event_loop_cv_.wait_until(lock, next_wake_time, [this] {
                 return should_exit_.load();
             });
         } else {
-            std::cout << "DEBUG: Event loop waiting for trigger" << std::endl;
             event_loop_cv_.wait(lock, [this] {
                 return should_exit_.load() || !has_active_operations();
             });
         }
     }
     
-    std::cout << "DEBUG: Goroutine " << id_ << " event loop exited" << std::endl;
 }
 
 // Async operation management
@@ -217,7 +200,6 @@ int64_t Goroutine::add_async_operation(AsyncOpType type, void* handle_data) {
     int64_t async_id = next_async_id_.fetch_add(1);
     async_operations_[async_id] = AsyncOperation(async_id, type, handle_data);
     
-    std::cout << "DEBUG: Added async operation " << async_id << " of type " << (int)type << std::endl;
     trigger_event_loop();
     return async_id;
 }
@@ -227,7 +209,6 @@ void Goroutine::complete_async_operation(int64_t async_id) {
     auto it = async_operations_.find(async_id);
     if (it != async_operations_.end()) {
         async_operations_.erase(it);
-        std::cout << "DEBUG: Completed async operation " << async_id << std::endl;
         trigger_event_loop();
     }
 }
@@ -237,7 +218,6 @@ void Goroutine::cancel_async_operation(int64_t async_id) {
     auto it = async_operations_.find(async_id);
     if (it != async_operations_.end()) {
         it->second.is_active = false;
-        std::cout << "DEBUG: Cancelled async operation " << async_id << std::endl;
         trigger_event_loop();
     }
 }
@@ -273,7 +253,6 @@ int64_t Goroutine::add_timer(int64_t delay_ms, void* function_address, bool is_i
     {
         std::lock_guard<std::mutex> lock(event_loop_mutex_);
         timer_queue_.push(timer);
-        std::cout << "DEBUG: Goroutine " << id_ << " added timer " << timer.id << " with " << delay_ms << "ms delay" << std::endl;
     }
     
     trigger_event_loop();
@@ -284,7 +263,6 @@ bool Goroutine::cancel_timer(int64_t timer_id) {
     std::lock_guard<std::mutex> lock(g_cancelled_timers_mutex);
     g_cancelled_timers.insert(timer_id);
     trigger_event_loop();
-    std::cout << "DEBUG: Timer " << timer_id << " marked for cancellation" << std::endl;
     return true;
 }
 
@@ -311,7 +289,6 @@ void Goroutine::reset_task(std::function<void()> new_task) {
         task_ = std::move(new_task);
         state_ = GoroutineState::CREATED;
         should_exit_.store(false);
-        std::cout << "DEBUG: Goroutine " << id_ << " task reset for reuse" << std::endl;
     } else {
         std::cerr << "ERROR: Cannot reset task of running goroutine" << std::endl;
     }
@@ -319,23 +296,20 @@ void Goroutine::reset_task(std::function<void()> new_task) {
 
 void* Goroutine::allocate_shared_memory(size_t size) {
     void* ptr = g_shared_memory_pool.allocate(size);
-    std::cout << "DEBUG: Goroutine " << id_ << " allocated " << size 
-              << " bytes of shared memory at " << ptr << std::endl;
+    // std::cout << " bytes of shared memory at " << ptr << std::endl;
     return ptr;
 }
 
 void Goroutine::share_memory(void* ptr, std::shared_ptr<Goroutine> target) {
     if (ptr && target) {
         g_shared_memory_pool.add_ref(ptr);
-        std::cout << "DEBUG: Goroutine " << id_ << " shared memory at " << ptr 
-                  << " with goroutine " << target->get_id() << std::endl;
+        // std::cout << " with goroutine " << target->get_id() << std::endl;
     }
 }
 
 void Goroutine::release_shared_memory(void* ptr) {
     if (ptr) {
         g_shared_memory_pool.release(ptr);
-        std::cout << "DEBUG: Goroutine " << id_ << " released shared memory at " << ptr << std::endl;
     }
 }
 
@@ -382,36 +356,30 @@ void GoroutineScheduler::spawn_main_goroutine(std::function<void()> task) {
     // Start the main goroutine
     main_goroutine_->start();
     
-    std::cout << "DEBUG: Main goroutine spawned with ID " << id << std::endl;
 }
 
 void GoroutineScheduler::wait_for_main_goroutine() {
-    std::cout << "DEBUG: Waiting for main goroutine to complete..." << std::endl;
     
     // Wait for main goroutine to signal completion
     std::unique_lock<std::mutex> lock(main_completion_mutex_);
     main_completion_cv_.wait(lock, [this] { return main_goroutine_completed_.load(); });
     
-    std::cout << "DEBUG: Main goroutine completed - all children and timers are done" << std::endl;
 }
 
 void GoroutineScheduler::signal_main_goroutine_completion() {
     std::lock_guard<std::mutex> lock(main_completion_mutex_);
     main_goroutine_completed_.store(true);
     main_completion_cv_.notify_one();
-    std::cout << "DEBUG: Signaled main goroutine completion" << std::endl;
 }
 
 void GoroutineScheduler::register_goroutine(std::shared_ptr<Goroutine> g) {
     std::lock_guard<std::mutex> lock(goroutines_mutex_);
     goroutines_[g->get_id()] = g;
-    std::cout << "DEBUG: Registered goroutine " << g->get_id() << ", total: " << goroutines_.size() << std::endl;
 }
 
 void GoroutineScheduler::unregister_goroutine(int64_t id) {
     std::lock_guard<std::mutex> lock(goroutines_mutex_);
     goroutines_.erase(id);
-    std::cout << "DEBUG: Unregistered goroutine " << id << ", remaining: " << goroutines_.size() << std::endl;
 }
 
 size_t GoroutineScheduler::get_active_count() const {
@@ -423,13 +391,11 @@ size_t GoroutineScheduler::get_active_count() const {
 extern "C" {
 
 int64_t __gots_set_timeout(void* function_address, int64_t delay_ms) {
-    std::cout << "DEBUG: __gots_set_timeout called with delay_ms=" << delay_ms << " function_address=" << function_address << std::endl;
     if (!current_goroutine) {
         std::cerr << "ERROR: setTimeout called outside goroutine context" << std::endl;
         return -1;
     }
     
-    std::cout << "DEBUG: current_goroutine=" << current_goroutine.get() << " id=" << current_goroutine->get_id() << std::endl;
     return current_goroutine->add_timer(delay_ms, function_address, false);
 }
 
@@ -483,11 +449,9 @@ void __gots_cancel_async_handle(int64_t async_id) {
 
 void __runtime_spawn_main_goroutine(void* function_address) {
     auto task = [function_address]() {
-        std::cout << "DEBUG: Executing main function in main goroutine" << std::endl;
         typedef int (*FuncType)();
         FuncType func = reinterpret_cast<FuncType>(function_address);
         int result = func();
-        std::cout << "DEBUG: Main function completed with result: " << result << std::endl;
     };
     
     GoroutineScheduler::instance().spawn_main_goroutine(task);
@@ -513,6 +477,16 @@ int64_t create_timer_new(int64_t delay_ms, void* callback, bool is_interval) {
 
 bool cancel_timer_new(int64_t timer_id) {
     return gots::__gots_clear_timeout(timer_id);
+}
+
+void __new_goroutine_system_init() {
+    // Initialize the goroutine system if needed
+    // Most initialization happens automatically via singletons
+}
+
+void __new_goroutine_system_cleanup() {
+    // Cleanup the goroutine system
+    // Most cleanup happens automatically in destructors
 }
 
 } // extern "C"

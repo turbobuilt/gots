@@ -70,14 +70,12 @@ std::unordered_map<std::string, RuntimeMethodInfo> runtime_method_registry;
 extern "C" {
 
 int64_t __runtime_time_now_millis() {
-    std::cout << "DEBUG: __runtime_time_now_millis called!" << std::endl;
     
     // Use the same approach as __date_now for consistency
     auto now = std::chrono::system_clock::now();
     auto time_since_epoch = now.time_since_epoch();
     auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(time_since_epoch).count();
     
-    std::cout << "DEBUG: Returning timestamp: " << millis << std::endl;
     return millis;
 }
 
@@ -1118,7 +1116,6 @@ static std::mutex deferred_mutex;
 // Timer management is now handled by MainThreadTimerManager
 
 int64_t __runtime_timer_set_timeout(void* callback, int64_t delay) {
-    std::cout << "DEBUG: __runtime_timer_set_timeout called with callback=" << callback << ", delay=" << delay << std::endl;
     
     // Use new goroutine timer system
     return __gots_set_timeout(callback, delay);
@@ -1126,7 +1123,6 @@ int64_t __runtime_timer_set_timeout(void* callback, int64_t delay) {
 
 // Function to wait for all active timers to complete
 void __runtime_timer_wait_all() {
-    std::cout << "DEBUG: __runtime_timer_wait_all called (new timer system)!" << std::endl;
     std::cout.flush();
     
     // In new system, timer processing is handled by goroutine event loops
@@ -1135,7 +1131,6 @@ void __runtime_timer_wait_all() {
 
 // Add this function to runtime cleanup to stop the event loop
 void __runtime_timer_cleanup() {
-    std::cout << "DEBUG: Timer cleanup called (new timer system)" << std::endl;
     
     // In new system, cleanup is handled by goroutine scheduler
     // This function is just a placeholder now
@@ -1143,19 +1138,16 @@ void __runtime_timer_cleanup() {
 
 // Process deferred timers - placeholder for old system
 void __runtime_process_deferred_timers() {
-    std::cout << "DEBUG: __runtime_process_deferred_timers called (new timer system)!" << std::endl;
     
     // In new system, timer processing is handled by goroutine event loops
     // This function is just a placeholder now
 }
 
 int64_t __runtime_timer_set_interval(void* callback, int64_t delay) {
-    std::cout << "DEBUG: __runtime_timer_set_interval called (new timer system)!" << std::endl;
     
     // Use new timer system directly (bypass wrapper)
     int64_t timer_id = __gots_set_interval(callback, delay);
     
-    std::cout << "DEBUG: Interval timer " << timer_id << " created with " << delay << "ms delay using new system" << std::endl;
     return timer_id;
 }
 
@@ -1166,11 +1158,9 @@ int64_t __runtime_timer_set_immediate(void* callback) {
 
 // Function removed - now defined earlier in the file
 bool __runtime_timer_clear_timeout(int64_t id) {
-    std::cout << "DEBUG: clearTimeout called for id=" << id << " (new timer system)" << std::endl;
     
     // Use the new timer cancellation system directly (bypass wrapper)
     bool result = __gots_clear_timeout(id);
-    std::cout << "DEBUG: Timer " << id << (result ? " cancelled successfully" : " cancellation failed") << " using new system" << std::endl;
     return result;
 }
 
@@ -1911,7 +1901,6 @@ void initialize_runtime_object() {
 
 // Simple test function to verify calling convention
 int64_t __runtime_test_simple() {
-    std::cout << "DEBUG: __runtime_test_simple called successfully!" << std::endl;
     return 42;
 }
 
@@ -1987,7 +1976,6 @@ void __runtime_register_global() {
     
     // Legacy goroutine functions removed - using fast spawn system
     
-    std::cout << "DEBUG: All runtime syscalls registered!" << std::endl;
 }
 } // extern "C"
 

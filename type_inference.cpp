@@ -32,39 +32,30 @@ DataType TypeInference::infer_type(const std::string& expression) {
 }
 
 DataType TypeInference::infer_operator_index_type(const std::string& class_name, const std::string& index_expression) {
-    std::cout << "DEBUG: infer_operator_index_type called with class=" << class_name << ", expression='" << index_expression << "'" << std::endl;
     
     auto* compiler = get_current_compiler();
     if (!compiler) {
-        std::cout << "DEBUG: No compiler available" << std::endl;
         return DataType::UNKNOWN;
     }
     
     // Check if the index expression is deterministic
     bool is_deterministic = is_deterministic_expression(index_expression);
-    std::cout << "DEBUG: Expression is deterministic: " << (is_deterministic ? "YES" : "NO") << std::endl;
     
     if (is_deterministic) {
         // For deterministic expressions, infer the type based on the expression
         DataType inferred_type = infer_expression_type(index_expression);
-        std::cout << "DEBUG: Inferred type from expression: " << static_cast<int>(inferred_type) << std::endl;
         
         if (inferred_type != DataType::UNKNOWN) {
             // For numeric literals, try priority ordering
             if (is_numeric_literal(index_expression)) {
-                std::cout << "DEBUG: Expression is numeric literal" << std::endl;
                 DataType best_numeric_type = get_best_numeric_operator_type(class_name, index_expression);
-                std::cout << "DEBUG: Best numeric type: " << static_cast<int>(best_numeric_type) << std::endl;
                 if (best_numeric_type != DataType::UNKNOWN) {
                     std::vector<DataType> operand_types = {best_numeric_type};
                     const auto* overload = compiler->find_best_operator_overload(class_name, TokenType::LBRACKET, operand_types);
-                    std::cout << "DEBUG: Found operator overload: " << (overload ? "YES" : "NO") << std::endl;
                     if (overload) {
-                        std::cout << "DEBUG: Returning overload return type: " << static_cast<int>(overload->return_type) << std::endl;
                         return overload->return_type;
                     }
                 } else {
-                    std::cout << "DEBUG: Best numeric type is UNKNOWN" << std::endl;
                 }
             } else {
                 // For other deterministic expressions, use the inferred type directly
@@ -168,7 +159,6 @@ TokenType TypeInference::string_to_operator_token(const std::string& op_str) {
 }
 
 DataType TypeInference::infer_expression_type(const std::string& expression) {
-    std::cout << "DEBUG: infer_expression_type called with: '" << expression << "'" << std::endl;
     
     // Handle numeric literals with priority ordering
     // First check for integer without decimal point
@@ -186,21 +176,17 @@ DataType TypeInference::infer_expression_type(const std::string& expression) {
     
     // Check for decimal literal (including .000000 formatted integers)
     if (std::regex_match(expression, std::regex(R"(\d+\.\d+)"))) {
-        std::cout << "DEBUG: Matched decimal literal pattern for: " << expression << std::endl;
         double value = std::stod(expression);
         
         // Check if it's really an integer value (like 0.000000)
         if (std::floor(value) == value && value >= INT32_MIN && value <= INT32_MAX) {
             // It's an integer value formatted as float - treat as integer
-            std::cout << "DEBUG: Detected integer value in float format, returning INT64" << std::endl;
             return DataType::INT64; // Use int64 for compatibility
         } else {
             // It's a real decimal value
-            std::cout << "DEBUG: Detected real decimal value, returning FLOAT64" << std::endl;
             return DataType::FLOAT64; // Default to float64 for decimal literals
         }
     } else {
-        std::cout << "DEBUG: Expression '" << expression << "' does not match decimal literal pattern" << std::endl;
     }
     
     // Handle slice notation - convert to string
@@ -256,7 +242,6 @@ DataType TypeInference::infer_complex_expression_type(const std::string& express
 }
 
 DataType TypeInference::get_best_numeric_operator_type(const std::string& class_name, const std::string& numeric_literal) {
-    std::cout << "DEBUG: get_best_numeric_operator_type called with: '" << numeric_literal << "'" << std::endl;
     
     auto* compiler = get_current_compiler();
     if (!compiler) {
@@ -265,7 +250,6 @@ DataType TypeInference::get_best_numeric_operator_type(const std::string& class_
     
     // Parse the numeric literal
     bool has_decimal = numeric_literal.find('.') != std::string::npos;
-    std::cout << "DEBUG: Has decimal: " << (has_decimal ? "YES" : "NO") << std::endl;
     
     if (!has_decimal) {
         // Integer literal - try in priority order: int64, int32, float64, float32, ANY
@@ -286,16 +270,12 @@ DataType TypeInference::get_best_numeric_operator_type(const std::string& class_
         }
     } else {
         // Decimal literal - try in priority order: float64, float32, ANY
-        std::cout << "DEBUG: Trying decimal literal priority ordering" << std::endl;
         std::vector<DataType> priority_types = {DataType::FLOAT64, DataType::FLOAT32, DataType::ANY};
         
         for (DataType type : priority_types) {
-            std::cout << "DEBUG: Trying type: " << static_cast<int>(type) << std::endl;
             std::vector<DataType> operand_types = {type};
             const auto* overload = compiler->find_best_operator_overload(class_name, TokenType::LBRACKET, operand_types);
-            std::cout << "DEBUG: Found overload for type " << static_cast<int>(type) << ": " << (overload ? "YES" : "NO") << std::endl;
             if (overload) {
-                std::cout << "DEBUG: Returning type: " << static_cast<int>(type) << std::endl;
                 return type;
             }
         }
@@ -303,7 +283,6 @@ DataType TypeInference::get_best_numeric_operator_type(const std::string& class_
         // FALLBACK: If no exact type match found, but we know there are operator overloads,
         // just return FLOAT64 since we're dealing with decimal literals
         if (compiler->has_operator_overload(class_name, TokenType::LBRACKET)) {
-            std::cout << "DEBUG: Fallback - returning FLOAT64 for decimal literal" << std::endl;
             return DataType::FLOAT64;
         }
     }

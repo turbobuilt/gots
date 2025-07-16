@@ -366,12 +366,10 @@ void X86CodeGen::emit_call(const std::string& label) {
             func_addr = it->second;
         } else {
             // Default case - return a no-op function for unimplemented runtime functions
-            std::cout << "DEBUG: Unimplemented runtime function: " << label << std::endl;
             func_addr = (void*)__runtime_stub_function;
         }
         
         if (func_addr) {
-            std::cout << "DEBUG: About to generate call to " << label << " at address " << func_addr << std::endl;
             // mov rax, immediate64
             code.push_back(0x48);
             code.push_back(0xB8);
@@ -382,7 +380,6 @@ void X86CodeGen::emit_call(const std::string& label) {
             // call rax
             code.push_back(0xFF);
             code.push_back(0xD0);
-            std::cout << "DEBUG: Generated call instruction for " << label << std::endl;
             return;
         }
     }
@@ -560,7 +557,6 @@ void X86CodeGen::emit_and_reg_imm(int reg, int64_t value) {
 }
 
 void X86CodeGen::emit_label(const std::string& label) {
-    std::cout << "DEBUG: emit_label(" << label << ") at offset " << code.size() << std::endl;
     label_offsets[label] = code.size();
     
     for (auto& jump : unresolved_jumps) {
@@ -583,11 +579,9 @@ void X86CodeGen::emit_label(const std::string& label) {
 
 void X86CodeGen::resolve_runtime_function_calls() {
     // Legacy function resolution disabled - using fast function table system
-    std::cout << "DEBUG: Legacy function resolution disabled (using fast function table)" << std::endl;
 }
 
 void X86CodeGen::emit_goroutine_spawn(const std::string& function_name) {
-    std::cout << "DEBUG: emit_goroutine_spawn called with: " << function_name << std::endl;
     std::cout.flush();
     
     // Use string pooling for function names (similar to StringLiteral)
@@ -602,18 +596,15 @@ void X86CodeGen::emit_goroutine_spawn(const std::string& function_name) {
         it = func_name_pool.find(function_name);
     }
     
-    std::cout << "DEBUG: About to emit call to __goroutine_spawn with function name: " << it->second << std::endl;
     std::cout.flush();
     
     // WORKAROUND: Due to JIT call issues, spawn goroutine properly using thread pool
     // This ensures timers work correctly with proper goroutine lifecycle
-    std::cout << "DEBUG: WORKAROUND: Using proper goroutine spawn with function name" << std::endl;
     
     // Load function name into RDI for the call
     emit_mov_reg_imm(RDI, reinterpret_cast<int64_t>(it->second));
     emit_call("__goroutine_spawn");
     
-    std::cout << "DEBUG: emit_call to __goroutine_spawn completed" << std::endl;
     std::cout.flush();
 }
 
@@ -676,7 +667,6 @@ void X86CodeGen::emit_goroutine_spawn_with_func_id() {
 }
 
 void X86CodeGen::emit_goroutine_spawn_with_address(void* function_address) {
-    std::cout << "DEBUG: emit_goroutine_spawn_with_address called with address: " << function_address << std::endl;
     
     // Load function address into RDI register
     emit_mov_reg_imm(RDI, reinterpret_cast<int64_t>(function_address));
@@ -992,7 +982,6 @@ void X86CodeGen::emit_goroutine_spawn_direct(void* function_address) {
     // ULTRA-OPTIMIZED: Direct goroutine spawn with zero function call overhead
     // This is the fastest possible goroutine spawn - no ABI overhead, no lookups
     
-    std::cout << "DEBUG: emit_goroutine_spawn_direct called with address: " << function_address << std::endl;
     
     // Load function address directly into RDI register for the spawn function
     emit_mov_reg_imm(RDI, reinterpret_cast<int64_t>(function_address));
@@ -1005,7 +994,6 @@ void X86CodeGen::emit_goroutine_spawn_with_offset(size_t function_offset) {
     // NEAR-OPTIMAL: Calculate function address as executable_memory_base + offset
     // This adds one LEA instruction but is still very fast
     
-    std::cout << "DEBUG: emit_goroutine_spawn_with_offset called with offset: " << function_offset << std::endl;
     
     // Get executable memory base address (stored globally)
     emit_call("__get_executable_memory_base"); // Result in RAX
@@ -1038,7 +1026,6 @@ void X86CodeGen::emit_goroutine_spawn_with_offset(size_t function_offset) {
 void X86CodeGen::emit_calculate_function_address_from_offset(size_t function_offset) {
     // NEAR-OPTIMAL: Calculate function address for non-goroutine callbacks
     
-    std::cout << "DEBUG: emit_calculate_function_address_from_offset called with offset: " << function_offset << std::endl;
     
     // Get executable memory base address
     emit_call("__get_executable_memory_base"); // Result in RAX

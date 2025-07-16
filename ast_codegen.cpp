@@ -142,7 +142,6 @@ void Identifier::generate_code(CodeGenerator& gen, TypeInference& types) {
     if (name == "runtime") {
         // The runtime object is a special global that doesn't need any code generation
         // PropertyAccess and MethodCall nodes will optimize runtime.x.y() calls
-        std::cout << "DEBUG: Identifier 'runtime' detected" << std::endl;
         result_type = DataType::RUNTIME_OBJECT;
         return;
     }
@@ -666,7 +665,6 @@ void FunctionCall::generate_code(CodeGenerator& gen, TypeInference& types) {
             return;
         } else if (name == "console.log") {
             // Handle console.log function calls in operator overloads - same as MethodCall handling
-            std::cout << "DEBUG: FunctionCall - handling console.log with " << arguments.size() << " arguments" << std::endl;
             
             // Generate first string
             if (arguments.size() >= 1) {
@@ -728,7 +726,6 @@ void FunctionCall::generate_code(CodeGenerator& gen, TypeInference& types) {
         
         if (is_function_variable) {
             // This is a variable containing a function ID - resolve it to function address
-            std::cout << "DEBUG: Calling function variable: " << name << std::endl;
             
             // Ensure our lookup function is registered
             ensure_lookup_function_by_id_registered();
@@ -759,17 +756,14 @@ void FunctionCall::generate_code(CodeGenerator& gen, TypeInference& types) {
             Function* func = compiler->get_function(name);
             if (func) {
                 result_type = func->return_type;
-                // std::cout << "DEBUG: Found function '" << name << "' with return type: " 
                 //           << static_cast<int>(result_type) << std::endl;
             } else {
                 // Function not found in registry, assume NUMBER for built-in functions
                 result_type = DataType::NUMBER;
-                // std::cout << "DEBUG: Function '" << name << "' not found in registry, using default NUMBER type" << std::endl;
             }
         } else {
             // No compiler context, fall back to default
             result_type = DataType::NUMBER;
-            // std::cout << "DEBUG: No compiler context for function '" << name << "', using default NUMBER type" << std::endl;
         }
         
         // Clean up stack if we pushed arguments
@@ -785,7 +779,6 @@ void FunctionCall::generate_code(CodeGenerator& gen, TypeInference& types) {
 }
 
 void MethodCall::generate_code(CodeGenerator& gen, TypeInference& types) {
-    std::cout << "DEBUG: MethodCall - object: '" << object_name << "', method: '" << method_name << "'" << std::endl;
     
     // Handle built-in methods
     if (object_name == "console") {
@@ -889,8 +882,7 @@ void MethodCall::generate_code(CodeGenerator& gen, TypeInference& types) {
         DataType object_type = types.get_variable_type(object_name);
         
         // Debug output to see what type we get
-        std::cout << "DEBUG: Method call on object '" << object_name 
-                  << "' has type " << static_cast<int>(object_type) << std::endl;
+        // std::cout << "' has type " << static_cast<int>(object_type) << std::endl;
         
         if (object_type == DataType::TENSOR) {
             // Handle array/tensor methods
@@ -1014,11 +1006,9 @@ void MethodCall::generate_code(CodeGenerator& gen, TypeInference& types) {
             }
         } else if (object_type == DataType::REGEX) {
             // Handle regex methods like test, exec
-            std::cout << "DEBUG: Entering REGEX case for method '" << method_name << "'" << std::endl;
             if (method_name == "test") {
                 // Get the regex variable offset
                 int64_t regex_offset = types.get_variable_offset(object_name);
-                std::cout << "DEBUG: Regex offset for '" << object_name << "' is " << regex_offset << std::endl;
                 
                 // Load regex pointer from stack
                 gen.emit_mov_reg_mem(0, regex_offset); // RAX = [RBP + offset]
@@ -1031,7 +1021,6 @@ void MethodCall::generate_code(CodeGenerator& gen, TypeInference& types) {
                     gen.emit_mov_reg_reg(7, 12); // RDI = R12 (restore regex pointer)
                     
                     gen.emit_call("__regex_test");
-                    std::cout << "DEBUG: Called __regex_test, setting result_type to BOOLEAN" << std::endl;
                     result_type = DataType::BOOLEAN;
                 } else {
                     throw std::runtime_error("RegExp.test() requires a string argument");
@@ -1062,8 +1051,7 @@ void MethodCall::generate_code(CodeGenerator& gen, TypeInference& types) {
             }
         } else if (object_type == DataType::STRING) {
             // Handle string methods like match, replace, search, split
-            std::cout << "DEBUG: Entering STRING method case for object '" << object_name 
-                      << "' method '" << method_name << "'" << std::endl;
+            // std::cout << "' method '" << method_name << "'" << std::endl;
             if (method_name == "match") {
                 // Get the string variable offset and load the string pointer
                 int64_t string_offset = types.get_variable_offset(object_name);
@@ -1088,7 +1076,6 @@ void MethodCall::generate_code(CodeGenerator& gen, TypeInference& types) {
         } else if (object_type == DataType::UNKNOWN) {
             // If object_name is not a variable, it might be a static method call
             // Generate static method call: ClassName.methodName()
-            std::cout << "DEBUG: Entering UNKNOWN case (static method) for object '" << object_name << "'" << std::endl;
             
             // Special handling for Array static methods
             if (object_name == "Array") {
@@ -1196,8 +1183,7 @@ void MethodCall::generate_code(CodeGenerator& gen, TypeInference& types) {
             
             result_type = DataType::UNKNOWN; // TODO: Get actual return type from method signature
             
-            std::cout << "DEBUG: Generated static method call: " 
-                      << object_name << "." << method_name << " at label " << static_method_label << std::endl;
+            // std::cout << object_name << "." << method_name << " at label " << static_method_label << std::endl;
         } else {
             // Check if this is a class instance method call
             DataType object_type = types.get_variable_type(object_name);
@@ -1218,13 +1204,11 @@ void MethodCall::generate_code(CodeGenerator& gen, TypeInference& types) {
                 
                 result_type = DataType::UNKNOWN; // TODO: Get actual return type from method signature
                 
-                std::cout << "DEBUG: Generated class method call: " 
-                          << class_name << "::" << object_name << "." << method_name << std::endl;
+                // std::cout << class_name << "::" << object_name << "." << method_name << std::endl;
             } else {
                 // Unknown object type
                 gen.emit_mov_reg_imm(0, 0);
-                std::cout << "DEBUG: Unknown object method call: " 
-                          << object_name << "." << method_name << std::endl;
+                // std::cout << object_name << "." << method_name << std::endl;
                 result_type = DataType::UNKNOWN;
             }
         }
@@ -1239,8 +1223,6 @@ void FunctionExpression::generate_code(CodeGenerator& gen, TypeInference& types)
     // NEW THREE-PHASE SYSTEM: Function should already be compiled in Phase 2
     // During Phase 3, we just generate the appropriate code to reference the function
     
-    std::cout << "DEBUG: Phase 3 - Generating code for function expression at " << this << std::endl;
-    std::cout << "DEBUG: Function expression compilation_assigned_name_: '" << compilation_assigned_name_ << "'" << std::endl;
     
     // The function should already be registered in the FunctionCompilationManager
     // We need to find its name and address
@@ -1256,18 +1238,15 @@ void FunctionExpression::generate_code(CodeGenerator& gen, TypeInference& types)
     
     if (func_address) {
         // OPTIMAL PATH: Direct address call - zero overhead
-        std::cout << "DEBUG: Using DIRECT ADDRESS - " << func_name << " at address: " << func_address << std::endl;
         
         if (is_goroutine) {
             // ULTRA-OPTIMIZED: Direct goroutine spawn with address
-            std::cout << "DEBUG: FunctionExpression is_goroutine=true, calling DIRECT goroutine spawn" << std::endl;
             if (auto x86_gen = dynamic_cast<X86CodeGen*>(&gen)) {
                 x86_gen->emit_goroutine_spawn_direct(func_address);
             }
             result_type = DataType::PROMISE;
         } else {
             // ULTRA-OPTIMIZED: Direct function address return (no lookup needed)
-            std::cout << "DEBUG: FunctionExpression callback using DIRECT ADDRESS" << std::endl;
             gen.emit_mov_reg_imm(0, reinterpret_cast<int64_t>(func_address)); // RAX = function address
             result_type = DataType::FUNCTION;
         }
@@ -1277,11 +1256,9 @@ void FunctionExpression::generate_code(CodeGenerator& gen, TypeInference& types)
         
         if (FunctionCompilationManager::instance().is_function_compiled(func_name)) {
             // NEAR-OPTIMAL PATH: Calculate address at runtime (base + offset)
-            std::cout << "DEBUG: Using RELATIVE OFFSET - " << func_name << " at offset: " << func_offset << std::endl;
             
             if (is_goroutine) {
                 // Calculate function address as exec_memory_base + offset
-                std::cout << "DEBUG: FunctionExpression is_goroutine=true, calling relative offset goroutine spawn" << std::endl;
                 if (auto x86_gen = dynamic_cast<X86CodeGen*>(&gen)) {
                     // Use RIP-relative addressing to calculate function address
                     // This is still very fast - just one LEA instruction
@@ -1290,7 +1267,6 @@ void FunctionExpression::generate_code(CodeGenerator& gen, TypeInference& types)
                 result_type = DataType::PROMISE;
             } else {
                 // Calculate function address as exec_memory_base + offset  
-                std::cout << "DEBUG: FunctionExpression callback using RELATIVE OFFSET" << std::endl;
                 if (auto x86_gen = dynamic_cast<X86CodeGen*>(&gen)) {
                     x86_gen->emit_calculate_function_address_from_offset(func_offset);
                 }
@@ -1304,18 +1280,15 @@ void FunctionExpression::generate_code(CodeGenerator& gen, TypeInference& types)
                 throw std::runtime_error("Function not found in fast function registry");
             }
         
-        std::cout << "DEBUG: FALLBACK to function ID system - " << func_name << " has ID: " << func_id << std::endl;
         
         if (is_goroutine) {
             // Fallback: Use fast spawn with function ID
-            std::cout << "DEBUG: FunctionExpression is_goroutine=true, calling fast goroutine spawn (fallback)" << std::endl;
             if (auto x86_gen = dynamic_cast<X86CodeGen*>(&gen)) {
                 x86_gen->emit_goroutine_spawn_fast(func_id);
             }
             result_type = DataType::PROMISE;
         } else {
             // Fallback: Use fast lookup with function ID
-            std::cout << "DEBUG: FunctionExpression callback using fast lookup for ID (fallback): " << func_id << std::endl;
             
             // Load function ID into RDI and call fast lookup
             gen.emit_mov_reg_imm(7, static_cast<int64_t>(func_id)); // RDI = function ID
@@ -1333,7 +1306,6 @@ void FunctionExpression::compile_function_body(CodeGenerator& gen, TypeInference
         std::cerr << "ERROR: Invalid function name detected, skipping compilation" << std::endl;
         return;
     }
-    std::cout << "DEBUG: Compiling function body for: " << func_name << std::endl;
     
     // Save current stack offset state
     TypeInference local_types;
@@ -1376,10 +1348,8 @@ void FunctionExpression::compile_function_body(CodeGenerator& gen, TypeInference
     
     // Generate function body
     bool has_explicit_return = false;
-    std::cout << "DEBUG: Generating " << body.size() << " statements in function body" << std::endl;
     for (size_t i = 0; i < body.size(); i++) {
         const auto& stmt = body[i];
-        std::cout << "DEBUG: Generating statement " << i << " in function body" << std::endl;
         
         // Safety check for null pointers
         if (!stmt) {
@@ -1389,7 +1359,6 @@ void FunctionExpression::compile_function_body(CodeGenerator& gen, TypeInference
         
         try {
             stmt->generate_code(gen, local_types);
-            std::cout << "DEBUG: Statement " << i << " generated successfully" << std::endl;
         } catch (const std::exception& e) {
             std::cout << "ERROR: Statement " << i << " threw exception: " << e.what() << std::endl;
             throw;
@@ -1411,7 +1380,6 @@ void FunctionExpression::compile_function_body(CodeGenerator& gen, TypeInference
     
     // Safety check before final debug output
     if (!func_name.empty() && func_name.size() <= 1000) {
-        std::cout << "DEBUG: Function body compilation completed for: " << func_name << std::endl;
     }
 }
 
@@ -1457,18 +1425,15 @@ void ensure_lookup_function_by_id_registered() {
 }
 
 void ExpressionMethodCall::generate_code(CodeGenerator& gen, TypeInference& types) {
-    std::cout << "DEBUG: ExpressionMethodCall - method: '" << method_name << "'" << std::endl;
     
     // OPTIMIZATION: Check if this is runtime.x.y() pattern (like runtime.time.now())
     ExpressionPropertyAccess* expr_prop = dynamic_cast<ExpressionPropertyAccess*>(object.get());
     if (expr_prop) {
-        std::cout << "DEBUG: object is ExpressionPropertyAccess, property: '" << expr_prop->property_name << "'" << std::endl;
         
         // Check if the inner object is an Identifier with name "runtime"
         Identifier* runtime_ident = dynamic_cast<Identifier*>(expr_prop->object.get());
         if (runtime_ident && runtime_ident->name == "runtime") {
             // This is runtime.x.y() - generate direct function call
-            std::cout << "DEBUG: Found runtime.x.y() pattern!" << std::endl;
             std::string sub_object = expr_prop->property_name;  // e.g., "time"
             std::string function_name = "__runtime_" + sub_object + "_" + method_name;
             
@@ -1492,22 +1457,17 @@ void ExpressionMethodCall::generate_code(CodeGenerator& gen, TypeInference& type
             }
             // Add more mappings as needed
             
-            std::cout << "DEBUG: Runtime call optimized: " << sub_object << "." << method_name 
-                      << " -> " << function_name << std::endl;
+            // std::cout << " -> " << function_name << std::endl;
             
             // Generate argument code using proper x86-64 calling convention
             for (size_t i = 0; i < arguments.size() && i < 6; i++) {
-                std::cout << "DEBUG: Generating code for timer argument " << i << std::endl;
                 arguments[i]->generate_code(gen, types);
-                std::cout << "DEBUG: Timer argument " << i << " generated, value in RAX" << std::endl;
                 // Move argument to appropriate register (x86-64 calling convention)
                 switch (i) {
                     case 0: 
-                        std::cout << "DEBUG: Moving argument 0 (callback) from RAX to RDI" << std::endl;
                         gen.emit_mov_reg_reg(7, 0); // RDI = RAX (1st arg)
                         break;
                     case 1: 
-                        std::cout << "DEBUG: Moving argument 1 (delay) from RAX to RSI" << std::endl;
                         gen.emit_mov_reg_reg(6, 0); // RSI = RAX (2nd arg)
                         break;  
                     case 2: gen.emit_mov_reg_reg(2, 0); break;  // RDX = RAX (3rd arg)
@@ -1873,7 +1833,6 @@ void TypedArrayLiteral::generate_code(CodeGenerator& gen, TypeInference& types) 
 }
 
 void ArrayAccess::generate_code(CodeGenerator& gen, TypeInference& types) {
-    std::cout << "DEBUG: ArrayAccess::generate_code called" << std::endl;
     
     // First check if the object is a class instance with operator[] overload
     bool use_operator_overload = false;
@@ -1882,38 +1841,28 @@ void ArrayAccess::generate_code(CodeGenerator& gen, TypeInference& types) {
     // Try to determine if object is a class instance
     if (auto* var_expr = dynamic_cast<Identifier*>(object.get())) {
         DataType var_type = types.get_variable_type(var_expr->name);
-        std::cout << "DEBUG: ArrayAccess variable " << var_expr->name << " has type: " << static_cast<int>(var_type) << std::endl;
         if (var_type == DataType::CLASS_INSTANCE) {
             class_name = types.get_variable_class_name(var_expr->name);
-            std::cout << "DEBUG: Variable " << var_expr->name << " is CLASS_INSTANCE of class: " << class_name << std::endl;
             
             // Check if this class has operator[] or operator[:] overload
             auto* compiler = get_current_compiler();
-            std::cout << "DEBUG: Checking for operator[] and operator[:] overloads in class: " << class_name << std::endl;
             if (compiler) {
                 bool has_bracket_overload = compiler->has_operator_overload(class_name, TokenType::LBRACKET);
                 bool has_slice_overload = compiler->has_operator_overload(class_name, TokenType::SLICE_BRACKET);
-                std::cout << "DEBUG: Class " << class_name << " has operator[] overload: " << (has_bracket_overload ? "YES" : "NO") << std::endl;
-                std::cout << "DEBUG: Class " << class_name << " has operator[:] overload: " << (has_slice_overload ? "YES" : "NO") << std::endl;
                 
                 // Prefer slice operator for slice expressions, bracket operator otherwise
                 if (is_slice_expression && has_slice_overload) {
                     use_operator_overload = true;
-                    std::cout << "DEBUG: Using operator[:] overload for slice expression" << std::endl;
                 } else if (!is_slice_expression && has_bracket_overload) {
                     use_operator_overload = true;
-                    std::cout << "DEBUG: Using operator[] overload for index expression" << std::endl;
                 } else if (has_bracket_overload) {
                     // Fallback to bracket operator if available
                     use_operator_overload = true;
-                    std::cout << "DEBUG: Fallback to operator[] overload" << std::endl;
                 }
             } else {
-                std::cout << "DEBUG: No compiler instance available" << std::endl;
             }
         } else if (var_type == DataType::ARRAY) {
             // Handle simplified Array access directly
-            std::cout << "DEBUG: Variable " << var_expr->name << " is simplified Array type" << std::endl;
             
             // Get the array variable offset
             int64_t array_offset = types.get_variable_offset(var_expr->name);
@@ -1935,7 +1884,6 @@ void ArrayAccess::generate_code(CodeGenerator& gen, TypeInference& types) {
             gen.emit_call("__simple_array_get");
             result_type = DataType::NUMBER;
             
-            std::cout << "DEBUG: Used simplified array access for " << var_expr->name << std::endl;
             return;
         }
     }
@@ -1945,23 +1893,19 @@ void ArrayAccess::generate_code(CodeGenerator& gen, TypeInference& types) {
         std::string index_expr_str = "";
         if (is_slice_expression) {
             index_expr_str = slice_expression;
-            std::cout << "DEBUG: Using slice expression: " << index_expr_str << std::endl;
         } else if (index) {
             // Extract the expression string using the helper method
             index_expr_str = types.extract_expression_string(index.get());
             if (index_expr_str.empty()) {
                 index_expr_str = "complex_expression";
             }
-            std::cout << "DEBUG: Extracted index expression: " << index_expr_str << std::endl;
         } else {
             // Handle case where we have slices but no index (new slice syntax)
             index_expr_str = "slice_expression";
-            std::cout << "DEBUG: Using new slice syntax" << std::endl;
         }
         
         // Use enhanced type inference to determine the best operator overload
         DataType index_type = types.infer_operator_index_type(class_name, index_expr_str);
-        std::cout << "DEBUG: Inferred index type: " << static_cast<int>(index_type) << " for expression: " << index_expr_str << std::endl;
         
         // Generate argument 0 (object)
         object->generate_code(gen, types);
@@ -1970,7 +1914,6 @@ void ArrayAccess::generate_code(CodeGenerator& gen, TypeInference& types) {
         // Generate argument 1 (index/string) and place in RSI
         if (is_slice_expression) {
             // For slice expressions, create a string literal directly
-            std::cout << "DEBUG: Generating string literal for slice: '" << slice_expression << "'" << std::endl;
             auto string_literal = std::make_unique<StringLiteral>(slice_expression);
             string_literal->generate_code(gen, types);
         } else if (index) {
@@ -1978,7 +1921,6 @@ void ArrayAccess::generate_code(CodeGenerator& gen, TypeInference& types) {
             index->generate_code(gen, types);
         } else if (!slices.empty()) {
             // For new slice syntax, generate slice object code
-            std::cout << "DEBUG: Generating code for new slice syntax" << std::endl;
             slices[0]->generate_code(gen, types);
         } else {
             // Fallback - generate a zero index
@@ -1994,29 +1936,23 @@ void ArrayAccess::generate_code(CodeGenerator& gen, TypeInference& types) {
             TokenType operator_token = (is_slice_expression && compiler->has_operator_overload(class_name, TokenType::SLICE_BRACKET)) 
                                      ? TokenType::SLICE_BRACKET 
                                      : TokenType::LBRACKET;
-            std::cout << "DEBUG: Using operator token: " << static_cast<int>(operator_token) << " for " << (is_slice_expression ? "slice" : "index") << " expression" << std::endl;
             const auto* best_overload = compiler->find_best_operator_overload(class_name, operator_token, operand_types);
             
             if (best_overload) {
                 // Call the specific operator overload function
                 std::string op_name = best_overload->function_name;
-                std::cout << "DEBUG: Calling best operator overload: " << op_name << std::endl;
                 gen.emit_call(op_name);
                 result_type = best_overload->return_type;
-                std::cout << "DEBUG: Using typed operator overload: " << op_name << " with return type: " << static_cast<int>(result_type) << std::endl;
             } else {
                 // No typed overload found, try to fall back to ANY overload
-                std::cout << "DEBUG: No typed overload found, trying ANY fallback" << std::endl;
                 
                 // Try ANY type overload as fallback
                 std::vector<DataType> any_operand_types = {DataType::ANY};
                 const auto* any_overload = compiler->find_best_operator_overload(class_name, operator_token, any_operand_types);
                 
                 if (any_overload) {
-                    std::cout << "DEBUG: Found ANY overload fallback: " << any_overload->function_name << std::endl;
                     gen.emit_call(any_overload->function_name);
                     result_type = any_overload->return_type;
-                    std::cout << "DEBUG: Using ANY fallback overload: " << any_overload->function_name << std::endl;
                 } else {
                     // Last resort: try direct function name construction for compatibility
                     std::string param_signature;
@@ -2027,10 +1963,8 @@ void ArrayAccess::generate_code(CodeGenerator& gen, TypeInference& types) {
                     }
                     
                     std::string op_function_name = class_name + "::__op_" + std::to_string(static_cast<int>(operator_token)) + "_any_" + param_signature + "__";
-                    std::cout << "DEBUG: Last resort - calling operator overload directly: " << op_function_name << std::endl;
                     gen.emit_call(op_function_name);
                     result_type = DataType::CLASS_INSTANCE; // Assume operator overloads return class instances
-                    std::cout << "DEBUG: Using direct operator overload: " << op_function_name << std::endl;
                 }
             }
         } else {
@@ -2067,15 +2001,12 @@ void ArrayAccess::generate_code(CodeGenerator& gen, TypeInference& types) {
         gen.emit_add_reg_imm(4, 8);   // add rsp, 8 (restore stack)
         
         // Call array access function
-        std::cout << "DEBUG: About to call __array_access" << std::endl;
         gen.emit_call("__array_access");
-        std::cout << "DEBUG: Called __array_access" << std::endl;
         
         // Result is in RAX
         result_type = DataType::UNKNOWN; // Array access returns unknown type for JavaScript compatibility
     }
     
-    std::cout << "DEBUG: ArrayAccess result_type: " << static_cast<int>(result_type) << std::endl;
 }
 
 void Assignment::generate_code(CodeGenerator& gen, TypeInference& types) {
@@ -2102,20 +2033,17 @@ void Assignment::generate_code(CodeGenerator& gen, TypeInference& types) {
         }
         
         // Handle class instance assignments specially - robust object instance detection
-        std::cout << "DEBUG: Assignment " << variable_name << " - declared_type: " << static_cast<int>(declared_type) 
-                  << ", value->result_type: " << static_cast<int>(value->result_type) << std::endl;
+        // std::cout << ", value->result_type: " << static_cast<int>(value->result_type) << std::endl;
         if (declared_type == DataType::CLASS_INSTANCE || 
             (declared_type == DataType::UNKNOWN && value->result_type == DataType::CLASS_INSTANCE)) {
             auto new_expr = dynamic_cast<NewExpression*>(value.get());
             if (new_expr) {
                 // Set the class type information for this variable
                 types.set_variable_class_type(variable_name, new_expr->class_name);
-                std::cout << "DEBUG: Set variable " << variable_name << " class type to: " << new_expr->class_name << std::endl;
             }
             // ALWAYS set the variable type to CLASS_INSTANCE for object instances
             // This includes both NewExpression and ObjectLiteral
             variable_type = DataType::CLASS_INSTANCE;
-            std::cout << "DEBUG: Set variable " << variable_name << " type to CLASS_INSTANCE" << std::endl;
         }
         
         // Allocate or get the proper stack offset for this variable
@@ -2232,7 +2160,6 @@ void FunctionDecl::generate_code(CodeGenerator& gen, TypeInference& types) {
         func.stack_size = 0; // Will be filled during execution
         compiler->register_function(name, func);
         
-        // std::cout << "DEBUG: Registered function '" << name << "' with return type: " 
         //           << static_cast<int>(func.return_type) << std::endl;
     }
 }
@@ -2591,7 +2518,6 @@ void PropertyAccess::generate_code(CodeGenerator& gen, TypeInference& types) {
         // This is accessing a runtime sub-object like runtime.time, runtime.fs, etc.
         // We DON'T generate any code here - just mark the type
         // The parent ExpressionPropertyAccess or MethodCall will handle the optimization
-        std::cout << "DEBUG: PropertyAccess 'runtime." << property_name << "' detected" << std::endl;
         result_type = DataType::RUNTIME_OBJECT;
         return;
     }
@@ -2611,7 +2537,6 @@ void PropertyAccess::generate_code(CodeGenerator& gen, TypeInference& types) {
         gen.emit_call("__object_get_property");
         // Result will be in RAX
         
-        std::cout << "DEBUG: Generated property access: this." << property_name << std::endl;
         result_type = DataType::UNKNOWN; // TODO: Get actual property type
     } else {
         // Handle regular object.property access
@@ -2635,9 +2560,6 @@ void PropertyAccess::generate_code(CodeGenerator& gen, TypeInference& types) {
             gen.emit_mov_reg_imm(6, property_index);  // RSI = property_index
             gen.emit_call("__object_get_property");
             // Result will be in RAX
-            
-            std::cout << "DEBUG: Generated instance property access: " 
-                      << object_name << "." << property_name << " (index " << property_index << ")" << std::endl;
             result_type = DataType::UNKNOWN; // TODO: Get actual property type
         } else {
             // Object not found as variable - might be static property access (ClassName.property)
@@ -2664,9 +2586,6 @@ void PropertyAccess::generate_code(CodeGenerator& gen, TypeInference& types) {
             gen.emit_mov_reg_imm(6, reinterpret_cast<int64_t>(property_name_ptr)); // RSI = property_name
             gen.emit_call("__static_get_property");
             // Result will be in RAX
-            
-            std::cout << "DEBUG: Generated static property access: " 
-                      << object_name << "." << property_name << std::endl;
             result_type = DataType::UNKNOWN; // TODO: Get actual property type
         }
     }
@@ -2679,7 +2598,6 @@ void ExpressionPropertyAccess::generate_code(CodeGenerator& gen, TypeInference& 
     if (prop_access && prop_access->object_name == "runtime") {
         // This is runtime.x access - store the sub-object name for method call optimization
         // We don't generate any code here - MethodCall will handle the direct call
-        std::cout << "DEBUG: ExpressionPropertyAccess 'runtime." << property_name << "' detected" << std::endl;
         result_type = DataType::RUNTIME_OBJECT;
         return;
     }
@@ -2783,7 +2701,6 @@ void ThisExpression::generate_code(CodeGenerator& gen, TypeInference& types) {
     // TODO: Implement 'this' code generation
     // For now, just put 0 in RAX as placeholder
     gen.emit_mov_reg_imm(0, 0);
-    std::cout << "DEBUG: ThisExpression code generation not yet implemented" << std::endl;
 }
 
 void NewExpression::generate_code(CodeGenerator& gen, TypeInference& types) {
@@ -2845,15 +2762,11 @@ void NewExpression::generate_code(CodeGenerator& gen, TypeInference& types) {
     // Call the constructor function
     gen.emit_call(constructor_label);
     
-    std::cout << "DEBUG: Generated call to constructor: " << constructor_label 
-              << " with " << arguments.size() << " arguments" << std::endl;
-    
     // Restore object_id to RAX for return value
     gen.emit_mov_reg_mem(0, -8);
     
     result_type = DataType::CLASS_INSTANCE;
     
-    std::cout << "DEBUG: Generated object creation for class: " << class_name << std::endl;
 }
 
 void ConstructorDecl::generate_code(CodeGenerator& gen, TypeInference& types) {
@@ -2917,21 +2830,18 @@ void ConstructorDecl::generate_code(CodeGenerator& gen, TypeInference& types) {
                     gen.emit_mov_reg_imm(6, i);  // RSI = property_index
                     gen.emit_call("__object_set_property");
                     
-                    std::cout << "DEBUG: Initialized field '" << field.name << "' with default value" << std::endl;
                 }
             }
         }
     }
     
     // Generate constructor body
-    std::cout << "DEBUG: Generating constructor body with " << body.size() << " statements" << std::endl;
     for (const auto& stmt : body) {
         stmt->generate_code(gen, types);
     }
     
     gen.emit_epilogue();
     
-    std::cout << "DEBUG: Generated constructor function: " << constructor_label << std::endl;
 }
 
 void MethodDecl::generate_code(CodeGenerator& gen, TypeInference& types) {
@@ -3011,7 +2921,6 @@ void MethodDecl::generate_code(CodeGenerator& gen, TypeInference& types) {
     
     gen.emit_function_return();
     
-    std::cout << "DEBUG: Generated method function: " << name << " at label " << method_label << std::endl;
 }
 
 void PropertyAssignment::generate_code(CodeGenerator& gen, TypeInference& types) {
@@ -3027,7 +2936,6 @@ void PropertyAssignment::generate_code(CodeGenerator& gen, TypeInference& types)
         gen.emit_mov_reg_imm(6, 0);  // RSI = property_index (hardcoded for first property)
         gen.emit_call("__object_set_property");
         
-        std::cout << "DEBUG: Generated property assignment: this." << property_name << " = value" << std::endl;
     } else {
         // Handle regular object.property = value
         // Get object from variable
@@ -3052,9 +2960,6 @@ void PropertyAssignment::generate_code(CodeGenerator& gen, TypeInference& types)
             gen.emit_mov_reg_mem(7, obj_offset); // RDI = object_id
             gen.emit_mov_reg_imm(6, property_index);  // RSI = property_index
             gen.emit_call("__object_set_property");
-            
-            std::cout << "DEBUG: Generated property assignment: " 
-                      << object_name << "." << property_name << " = value (index " << property_index << ")" << std::endl;
         } else {
             // Object not found as variable - might be static property assignment (ClassName.property = value)
             // Setup string pooling for class name and property name
@@ -3080,9 +2985,6 @@ void PropertyAssignment::generate_code(CodeGenerator& gen, TypeInference& types)
             gen.emit_mov_reg_imm(6, reinterpret_cast<int64_t>(property_name_ptr)); // RSI = property_name
             gen.emit_mov_reg_reg(2, 0); // RDX = value (from RAX)
             gen.emit_call("__static_set_property");
-            
-            std::cout << "DEBUG: Generated static property assignment: " 
-                      << object_name << "." << property_name << " = value" << std::endl;
         }
     }
     
@@ -3092,7 +2994,6 @@ void PropertyAssignment::generate_code(CodeGenerator& gen, TypeInference& types)
 void ClassDecl::generate_code(CodeGenerator& gen, TypeInference& types) {
     // Class declarations don't generate code during main execution
     // Constructor and methods are generated separately in the function generation phase
-    std::cout << "DEBUG: ClassDecl code generation: " << name << " (constructor and methods generated separately)" << std::endl;
     
     // No code generation needed here - everything is handled in the function phase
 }
@@ -3128,7 +3029,6 @@ void SuperCall::generate_code(CodeGenerator& gen, TypeInference& types) {
     // This will need to be implemented to look up the parent class constructor
     gen.emit_call("__super_constructor_call");
     
-    std::cout << "DEBUG: Generated super constructor call with " << arguments.size() << " arguments" << std::endl;
     
     result_type = DataType::VOID;
 }
@@ -3164,9 +3064,6 @@ void SuperMethodCall::generate_code(CodeGenerator& gen, TypeInference& types) {
     // TODO: This should be enhanced to dynamically resolve parent class methods
     std::string parent_method_label = "__parent_method_" + method_name;
     gen.emit_call(parent_method_label);
-    
-    std::cout << "DEBUG: Generated super method call: super." << method_name 
-              << " with " << arguments.size() << " arguments at label " << parent_method_label << std::endl;
     
     result_type = DataType::UNKNOWN; // TODO: Get actual return type from method signature
 }
@@ -3205,40 +3102,29 @@ void ImportStatement::generate_code(CodeGenerator& gen, TypeInference& types) {
                 // Look for the exported value in the module's AST
                 for (const auto& stmt : module->ast) {
                     if (auto export_stmt = dynamic_cast<ExportStatement*>(stmt.get())) {
-                        std::cout << "DEBUG: Found export statement for spec '" << spec.local_name << "'" << std::endl;
                         
                         // Check if this export statement has a declaration (like "export const bobby = 'hello'")
                         if (export_stmt->declaration) {
-                            std::cout << "DEBUG: Export has declaration" << std::endl;
                             
                             // Check if this is an Assignment with a number literal value
                             if (auto assignment = dynamic_cast<Assignment*>(export_stmt->declaration.get())) {
-                                std::cout << "DEBUG: Export declaration is Assignment with variable '" << assignment->variable_name << "'" << std::endl;
                                 
                                 if (assignment->variable_name == spec.local_name) {
-                                    std::cout << "DEBUG: Variable name matches!" << std::endl;
                                     
                                     // Check if the value is a number literal
                                     if (auto number_literal = dynamic_cast<NumberLiteral*>(assignment->value.get())) {
                                         // Store the constant value globally instead of using stack
                                         global_imported_constants[spec.local_name] = number_literal->value;
                                         types.set_variable_type(spec.local_name, DataType::FLOAT64);
-                                        
-                                        std::cout << "DEBUG: Imported constant '" << spec.local_name 
-                                                  << "' = " << number_literal->value << " (stored globally)" << std::endl;
                                         break;
                                     } else {
-                                        std::cout << "DEBUG: Value is not a number literal" << std::endl;
                                     }
                                 }
                             } else {
-                                std::cout << "DEBUG: Export declaration is not Assignment, checking other types..." << std::endl;
                                 
                                 // Try to cast to other possible types
                                 if (auto func_decl = dynamic_cast<FunctionDecl*>(export_stmt->declaration.get())) {
-                                    std::cout << "DEBUG: Export declaration is FunctionDecl: " << func_decl->name << std::endl;
                                 } else {
-                                    std::cout << "DEBUG: Export declaration is unknown type" << std::endl;
                                 }
                             }
                             
@@ -3268,24 +3154,20 @@ void ImportStatement::generate_code(CodeGenerator& gen, TypeInference& types) {
 }
 
 void ExportStatement::generate_code(CodeGenerator& gen, TypeInference& types) {
-    std::cout << "DEBUG: Processing export statement" << std::endl;
     
     if (is_default) {
-        std::cout << "DEBUG: Default export" << std::endl;
         if (declaration) {
             // Generate code for the default export declaration
             declaration->generate_code(gen, types);
             // The result should be stored as the default export value
         }
     } else if (!specifiers.empty()) {
-        std::cout << "DEBUG: Named exports:" << std::endl;
         for (const auto& spec : specifiers) {
             std::cout << "  " << spec.local_name << " as " << spec.exported_name << std::endl;
         }
         // Named exports just mark existing variables/functions as exported
         // The actual export registration happens in the module system
     } else if (declaration) {
-        std::cout << "DEBUG: Export declaration" << std::endl;
         // Generate code for the exported declaration
         declaration->generate_code(gen, types);
         // Mark the declared item as exported
@@ -3352,14 +3234,11 @@ void OperatorOverloadDecl::generate_code(CodeGenerator& gen, TypeInference& type
     if (compiler) {
         OperatorOverload overload(operator_type, parameters, return_type);
         overload.function_name = op_function_name;
-        std::cout << "DEBUG: Registering operator overload " << op_function_name 
-                  << " for class " << class_name << " with operator type " << static_cast<int>(operator_type) << std::endl;
         compiler->register_operator_overload(class_name, overload);
         
         // Verify registration
         bool has_overload = compiler->has_operator_overload(class_name, operator_type);
-        std::cout << "DEBUG: After registration, class " << class_name << " has operator type " 
-                  << static_cast<int>(operator_type) << " overload: " << (has_overload ? "YES" : "NO") << std::endl;
+        (void)has_overload; // Suppress unused variable warning
     }
 }
 

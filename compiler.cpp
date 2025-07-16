@@ -107,7 +107,6 @@ void GoTSCompiler::compile(const std::string& source) {
         }
         
         // NEW THREE-PHASE COMPILATION SYSTEM
-        std::cout << "DEBUG: Starting Three-Phase Compilation System" << std::endl;
         FunctionCompilationManager::instance().clear();
         FunctionCompilationManager::instance().discover_functions(ast);
         
@@ -203,7 +202,6 @@ void GoTSCompiler::compile(const std::string& source) {
         }
         
         // Add explicit jump to epilogue to prevent fall-through
-        std::cout << "DEBUG: Generating jump to epilogue at offset " << codegen->get_code().size() << std::endl;
         codegen->emit_jump("__main_epilogue");
         
         // Mark epilogue location  
@@ -213,9 +211,7 @@ void GoTSCompiler::compile(const std::string& source) {
         codegen->emit_mov_reg_imm(0, 0);  // mov rax, 0
         
         // Generate function epilogue
-        std::cout << "DEBUG: About to emit main function epilogue at code offset " << codegen->get_code().size() << std::endl;
         codegen->emit_epilogue();
-        std::cout << "DEBUG: Main function epilogue emitted, final code size: " << codegen->get_code().size() << std::endl;
         
         std::cout << "Code generation completed. Machine code size: " 
                   << codegen->get_code().size() << " bytes" << std::endl;
@@ -274,7 +270,6 @@ void GoTSCompiler::execute() {
         
         // PRODUCTION FIX: Compile all deferred function expressions AFTER stubs are generated
         // This ensures function expressions are placed after stubs at the correct offset
-        std::cout << "DEBUG: Compiling deferred function expressions after stubs" << std::endl;
         compile_deferred_function_expressions(*codegen, type_system);
         
         // Update the executable memory with the function expressions
@@ -298,7 +293,6 @@ void GoTSCompiler::execute() {
         
         // Register all functions in the runtime registry
         auto& label_offsets = codegen->get_label_offsets();
-        std::cout << "DEBUG: All label offsets:" << std::endl;
         for (const auto& label : label_offsets) {
             std::cout << "  " << label.first << " -> " << label.second << std::endl;
         }
@@ -315,7 +309,6 @@ void GoTSCompiler::execute() {
                 reinterpret_cast<uintptr_t>(exec_mem) + offset
             );
             
-            std::cout << "DEBUG: Registering function " << name << " at offset " << offset << " (address " << func_addr << ")" << std::endl;
             __register_function_fast(func_addr, 0, 0);
         }
         
@@ -327,58 +320,44 @@ void GoTSCompiler::execute() {
             return;
         }
         
-        std::cout << "DEBUG: About to execute main function at offset " << main_it->second << std::endl;
-        std::cout << "DEBUG: exec_mem = " << exec_mem << std::endl;
-        std::cout << "DEBUG: Creating function pointer..." << std::endl;
         
         auto func = reinterpret_cast<int(*)()>(
             reinterpret_cast<uintptr_t>(exec_mem) + main_it->second
         );
         
-        std::cout << "DEBUG: Function pointer created successfully" << std::endl;
-        std::cout << "DEBUG: func address = " << (void*)func << std::endl;
         
         // Spawn the main function as the main goroutine - ALL JS runs in goroutines
         int result = 0;
         try {
-            std::cout << "DEBUG: About to spawn main function as main goroutine..." << std::endl;
-            std::cout << "DEBUG: Main function starts at offset " << main_it->second << std::endl;
             std::cout.flush();
             
             // Spawn main function as the top-level goroutine
             __runtime_spawn_main_goroutine(reinterpret_cast<void*>(func));
             {
                 std::lock_guard<std::mutex> lock(g_console_mutex);
-                std::cout << "DEBUG: Main goroutine spawned successfully" << std::endl;
                 std::cout.flush();
             }
             
             // With simplified timer system, no need to mark execution complete
             {
                 std::lock_guard<std::mutex> lock(g_console_mutex);
-                std::cout << "DEBUG: Main execution complete - simplified timer system running" << std::endl;
             }
             
             // Timer processing is now handled by the main goroutine's event loop
             
             // If we have timers, start the timer scheduler
             // For now, just exit cleanly since timer execution is complex
-            std::cout << "DEBUG: Program execution completed successfully" << std::endl;
         } catch (const std::exception& e) {
             std::cerr << "Exception caught during program execution: " << e.what() << std::endl;
         } catch (...) {
             std::cerr << "Unknown exception caught during program execution" << std::endl;
         }
         
-        std::cout << "DEBUG: Main function completed - waiting for main goroutine to exit" << std::endl;
         // Wait for main goroutine to complete (which will wait for all its children and timers)
         // This is the ONLY wait the main loop should do - never wait for timers directly
         __runtime_wait_for_main_goroutine();
-        std::cout << "DEBUG: Main goroutine completed - all children and timers are done" << std::endl;
         
-        std::cout << "DEBUG: About to call __runtime_cleanup()" << std::endl;
         __runtime_cleanup();
-        std::cout << "DEBUG: __runtime_cleanup() completed" << std::endl;
         
         // DON'T FREE THE EXECUTABLE MEMORY - it's needed for goroutine function calls
         // The registered functions in the function registry depend on this memory

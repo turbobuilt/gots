@@ -151,7 +151,6 @@ extern "C" {
 void __register_function_id(int64_t function_id, void* function_ptr) {
     std::lock_guard<std::mutex> lock(g_function_id_mutex);
     g_function_id_map[function_id] = function_ptr;
-    std::cout << "DEBUG: Registered function ID " << function_id << " -> " << function_ptr << std::endl;
 }
 
 // __lookup_function_by_id is now defined in ast_codegen.cpp to avoid duplicate symbol
@@ -161,7 +160,6 @@ int64_t __allocate_function_id() {
 }
 
 extern "C" void* __goroutine_spawn(const char* function_name) {
-    std::cout << "DEBUG: __goroutine_spawn redirecting to new system: " << function_name << std::endl;
     
     // Look up function in registry
     auto it = gots_function_registry.find(std::string(function_name));
@@ -171,11 +169,9 @@ extern "C" void* __goroutine_spawn(const char* function_name) {
     }
     
     void* func_ptr = it->second;
-    std::cout << "DEBUG: Found function " << function_name << " at " << func_ptr << std::endl;
     
     // Use NEW goroutine system
     auto task = [func_ptr, function_name]() {
-        std::cout << "DEBUG: New goroutine executing function: " << function_name << std::endl;
         
         typedef int64_t (*FuncType)();
         FuncType func = reinterpret_cast<FuncType>(func_ptr);
@@ -190,19 +186,16 @@ extern "C" void* __goroutine_spawn(const char* function_name) {
 }
 
 void __register_function(const char* name, void* func_ptr) {
-    std::cerr << "DEBUG: Registering function: " << name << " at address: " << func_ptr << std::endl;
     gots_function_registry[std::string(name)] = func_ptr;
 }
 
 // Initialize the new goroutine system
 void __runtime_init() {
-    std::cout << "DEBUG: Initializing new goroutine system" << std::endl;
     // New goroutine system initializes automatically via singleton
 }
 
 // Main cleanup - wait for all goroutines
 void __runtime_cleanup() {
-    std::cout << "DEBUG: Cleaning up goroutine system" << std::endl;
     // New goroutine system cleanup happens automatically in destructor
 }
 
@@ -210,7 +203,6 @@ extern "C" void* __lookup_function(const char* name) {
     std::string func_name(name);
     auto it = gots_function_registry.find(func_name);
     if (it != gots_function_registry.end()) {
-        std::cerr << "DEBUG: Found function " << name << " at address: " << it->second << std::endl;
         return it->second;
     }
     std::cerr << "ERROR: Function " << name << " not found in registry!" << std::endl;
@@ -223,24 +215,20 @@ thread_local bool g_is_goroutine_context = false;
 extern "C" void __set_goroutine_context(int64_t is_goroutine) {
     bool was_goroutine = g_is_goroutine_context;
     g_is_goroutine_context = (is_goroutine != 0);
-    std::cout << "DEBUG: Set goroutine context to " << g_is_goroutine_context << std::endl;
     
     if (g_is_goroutine_context && !was_goroutine) {
         // Setting up goroutine context
         // Initialize thread-local timer manager for this goroutine
         if (!g_thread_timer_manager) {
             g_thread_timer_manager = std::make_unique<GoroutineTimerManager>();
-            std::cout << "DEBUG: Created thread-local timer manager for goroutine" << std::endl;
         }
         
         // Increment active goroutine count
         g_active_goroutine_count.fetch_add(1);
-        std::cout << "DEBUG: Incremented active goroutine count to " << g_active_goroutine_count.load() << std::endl;
     } else if (!g_is_goroutine_context && was_goroutine) {
         // Cleaning up goroutine context
         // Process any pending timers before cleanup
         if (g_thread_timer_manager) {
-            std::cout << "DEBUG: Processing pending timers before goroutine cleanup" << std::endl;
             g_thread_timer_manager->process_timers();
         }
         
@@ -249,14 +237,12 @@ extern "C" void __set_goroutine_context(int64_t is_goroutine) {
         
         // Decrement active goroutine count
         g_active_goroutine_count.fetch_sub(1);
-        std::cout << "DEBUG: Decremented active goroutine count to " << g_active_goroutine_count.load() << std::endl;
     }
 }
 
 
 // Simple non-lambda worker function for testing
 void simple_worker_function(std::shared_ptr<Promise>* promise_ptr, void* func_ptr, int64_t arg1) {
-    std::cerr << "DEBUG: Worker thread starting (C function)..." << std::endl;
     auto promise = *promise_ptr;
     
     // Initialize scope chain for this thread
@@ -266,7 +252,6 @@ void simple_worker_function(std::shared_ptr<Promise>* promise_ptr, void* func_pt
         typedef int64_t (*FuncType1)(int64_t);
         FuncType1 func = reinterpret_cast<FuncType1>(func_ptr);
         
-        std::cerr << "DEBUG: About to call JIT function..." << std::endl;
         // Ensure proper floating point state and CPU features
 std::atomic<int64_t> g_simple_timer_id_counter{1};
 std::unordered_map<int64_t, std::thread> g_active_timers;
@@ -276,7 +261,6 @@ extern "C" {
 
 // Simple timer functions
 int64_t __gots_set_timeout(void* callback, int64_t delay_ms) {
-    std::cout << "DEBUG: __gots_set_timeout called with delay=" << delay_ms << "ms" << std::endl;
     
     int64_t timer_id = g_simple_timer_id_counter.fetch_add(1);
     
@@ -292,7 +276,6 @@ int64_t __gots_set_timeout(void* callback, int64_t delay_ms) {
             }
         }
         
-        std::cout << "DEBUG: Executing timer " << timer_id << " callback" << std::endl;
         typedef void (*TimerCallback)();
         TimerCallback cb = reinterpret_cast<TimerCallback>(callback);
         cb();
@@ -333,23 +316,18 @@ bool __gots_clear_interval(int64_t timer_id) {
 
 // Simple goroutine spawn using thread pool
 void __new_goroutine_spawn(void* func_ptr) {
-    std::cout << "DEBUG: Spawning simple goroutine" << std::endl;
     
     std::thread([func_ptr]() {
-        std::cout << "DEBUG: Executing goroutine function" << std::endl;
         typedef void (*FuncType)();
         FuncType func = reinterpret_cast<FuncType>(func_ptr);
         func();
-        std::cout << "DEBUG: Goroutine completed" << std::endl;
     }).detach();
 }
 
 void __new_goroutine_system_init() {
-    std::cout << "DEBUG: Simple goroutine system initialized" << std::endl;
 }
 
 void __new_goroutine_system_cleanup() {
-    std::cout << "DEBUG: Waiting for timers to complete..." << std::endl;
     
     // Wait for all active timers to complete
     while (true) {
@@ -358,12 +336,10 @@ void __new_goroutine_system_cleanup() {
             if (g_active_timers.empty()) {
                 break;
             }
-            std::cout << "DEBUG: " << g_active_timers.size() << " active timers remaining" << std::endl;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     
-    std::cout << "DEBUG: All timers completed" << std::endl;
 }
 
 } // extern "C"

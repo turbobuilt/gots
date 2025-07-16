@@ -47,7 +47,6 @@ void ThreadLocalCleanup::register_thread() {
     data.thread_id = thread_id;
     data.escape_data_initialized = true;
     
-    std::cout << "DEBUG: Registered thread for GC cleanup\n";
     
 #ifdef __linux__
     LinuxThreadExitHook::register_thread();
@@ -60,7 +59,6 @@ void ThreadLocalCleanup::register_thread() {
 void ThreadLocalCleanup::cleanup_thread() {
     auto thread_id = std::this_thread::get_id();
     
-    std::cout << "DEBUG: Cleaning up thread GC resources\n";
     
     // Clean up thread root cleanup first
     void* root_cleanup_ptr = nullptr;
@@ -75,7 +73,6 @@ void ThreadLocalCleanup::cleanup_thread() {
     if (root_cleanup_ptr) {
         // Note: The ThreadRootCleanup destructor will handle cleanup automatically
         // We don't delete it here as it's managed by thread_local storage
-        std::cout << "DEBUG: Thread root cleanup will be handled by thread_local destructor\n";
     }
     
     // Clean up TLAB
@@ -99,7 +96,6 @@ ThreadLocalCleanup::ThreadData* ThreadLocalCleanup::get_thread_data() {
 void ThreadLocalCleanup::cleanup_all_threads() {
     std::lock_guard<std::mutex> lock(thread_data_mutex_);
     
-    std::cout << "DEBUG: Cleaning up " << thread_data_.size() << " registered threads\n";
     
     for (auto& [thread_id, data] : thread_data_) {
         if (data.tlab) {
@@ -123,7 +119,6 @@ void TLABCleanup::cleanup_current_tlab() {
     extern thread_local TLAB* GenerationalHeap::tlab_;
     
     if (GenerationalHeap::tlab_) {
-        std::cout << "DEBUG: Cleaning up TLAB with " 
                   << GenerationalHeap::tlab_->used() << " bytes used\n";
         
         // Store TLAB pointer for cleanup
@@ -145,7 +140,6 @@ void TLABCleanup::cleanup_current_tlab() {
                 });
             
             if (it != all_tlabs.end()) {
-                std::cout << "DEBUG: Removing TLAB from global list\n";
                 all_tlabs.erase(it);
             } else {
                 std::cout << "WARNING: TLAB not found in global list during cleanup\n";
@@ -161,7 +155,6 @@ void TLABCleanup::cleanup_current_tlab() {
         // Clear thread-local pointer
         GenerationalHeap::tlab_ = nullptr;
         
-        std::cout << "DEBUG: TLAB cleanup completed\n";
     }
 }
 
@@ -172,7 +165,6 @@ void TLABCleanup::process_tlab_allocations(TLAB* tlab) {
     // In a real implementation, we'd scan for live objects
     size_t used_bytes = tlab->used();
     if (used_bytes > 0) {
-        std::cout << "DEBUG: Processing " << used_bytes << " bytes in TLAB\n";
         
         // Trigger a minor GC to handle any live objects
         GarbageCollector::instance().request_gc(false);
@@ -184,7 +176,6 @@ void TLABCleanup::return_tlab_space(TLAB* tlab) {
     
     size_t remaining = tlab->remaining();
     if (remaining > 0) {
-        std::cout << "DEBUG: Returning " << remaining << " bytes to heap\n";
         
         // Return unused TLAB space to the heap's free list
         auto& gc = GarbageCollector::instance();
@@ -198,13 +189,11 @@ void TLABCleanup::return_tlab_space(TLAB* tlab) {
         if (unused_size >= GCConfig::OBJECT_ALIGNMENT * 4) {
             // For now, just log the space recovery
             // A full implementation would need a proper free list
-            std::cout << "DEBUG: Would recover " << unused_size << " bytes to heap free list\n";
         }
     }
     
     // Important: Clear TLAB contents to prevent dangling pointers
     // Note: We can't access private members directly, so we rely on reset()
-    std::cout << "DEBUG: Clearing TLAB contents\n";
     
     // Reset TLAB state
     tlab->reset(nullptr, 0);
@@ -215,7 +204,6 @@ void TLABCleanup::return_tlab_space(TLAB* tlab) {
 // ============================================================================
 
 void EscapeDataCleanup::clear_escape_data() {
-    std::cout << "DEBUG: Clearing escape analysis data for thread\n";
     
     // Clear thread-local escape data
     g_escape_data.scope_stack.clear();
@@ -228,7 +216,6 @@ void EscapeDataCleanup::clear_escape_data() {
 void EscapeDataCleanup::save_escape_results() {
     // In debug builds, we might want to save escape analysis results
     #ifdef DEBUG_ESCAPE_ANALYSIS
-    std::cout << "DEBUG: Escape analysis results:\n";
     std::cout << "  Allocation sites: " << g_escape_data.allocation_sites.size() << "\n";
     std::cout << "  Variables tracked: " << g_escape_data.var_to_sites.size() << "\n";
     #endif
@@ -244,7 +231,6 @@ void LinuxThreadExitHook::initialize() {
         int result = pthread_key_create(&cleanup_key_, cleanup_destructor);
         if (result == 0) {
             key_created_ = true;
-            std::cout << "DEBUG: Created pthread cleanup key\n";
         } else {
             std::cerr << "ERROR: Failed to create pthread cleanup key\n";
         }
@@ -259,7 +245,6 @@ void LinuxThreadExitHook::register_thread() {
 }
 
 void LinuxThreadExitHook::cleanup_destructor(void* arg) {
-    std::cout << "DEBUG: pthread destructor called\n";
     ThreadLocalCleanup::thread_exit_handler();
 }
 
@@ -277,7 +262,6 @@ void WindowsThreadExitHook::initialize() {
     if (tls_index_ == TLS_OUT_OF_INDEXES) {
         std::cerr << "ERROR: Failed to allocate TLS index\n";
     } else {
-        std::cout << "DEBUG: Allocated TLS index\n";
     }
 }
 
@@ -288,7 +272,6 @@ void WindowsThreadExitHook::register_thread() {
 }
 
 void WindowsThreadExitHook::thread_detach_callback() {
-    std::cout << "DEBUG: Windows thread detach callback\n";
     ThreadLocalCleanup::thread_exit_handler();
 }
 
@@ -305,7 +288,6 @@ void WindowsThreadExitHook::shutdown() {
 // ============================================================================
 
 void initialize_thread_cleanup_system() {
-    std::cout << "DEBUG: Initializing thread cleanup system\n";
     
 #ifdef __linux__
     LinuxThreadExitHook::initialize();
@@ -319,7 +301,6 @@ void initialize_thread_cleanup_system() {
 }
 
 void shutdown_thread_cleanup_system() {
-    std::cout << "DEBUG: Shutting down thread cleanup system\n";
     
     // Clean up all registered threads
     ThreadLocalCleanup::cleanup_all_threads();

@@ -148,7 +148,6 @@ extern "C" {
 void __register_function_id(int64_t function_id, void* function_ptr) {
     std::lock_guard<std::mutex> lock(g_function_id_mutex);
     g_function_id_map[function_id] = function_ptr;
-    std::cout << "DEBUG: Registered function ID " << function_id << " -> " << function_ptr << std::endl;
 }
 
 // __lookup_function_by_id is now defined in ast_codegen.cpp to avoid duplicate symbol
@@ -186,14 +185,16 @@ void* __lookup_function_fast(uint16_t func_id) {
 
 // Initialize the new goroutine system
 void __runtime_init() {
-    std::cout << "DEBUG: Initializing new goroutine system" << std::endl;
-    // New goroutine system initializes automatically via singleton
+    // Initialize function table
+    for (size_t i = 0; i < MAX_FUNCTIONS; i++) {
+        g_function_table[i].func_ptr = nullptr;
+    }
+    __new_goroutine_system_init();
 }
 
 // Main cleanup - wait for all goroutines
 void __runtime_cleanup() {
-    std::cout << "DEBUG: Cleaning up goroutine system" << std::endl;
-    // New goroutine system cleanup happens automatically in destructor
+    __new_goroutine_system_cleanup();
 }
 
 // Main goroutine functions moved to goroutine_system.cpp
@@ -255,7 +256,6 @@ void* __goroutine_spawn_fast_arg2(uint16_t func_id, int64_t arg1, int64_t arg2) 
 
 // Proper array creation that creates a GoTS TypedArray
 void* __array_create(int64_t size) {
-    std::cout << "DEBUG: __array_create called with size: " << size << std::endl;
     
     // Create a simple TypedArray-like structure
     // For now, use a basic implementation that can be extended
@@ -278,7 +278,6 @@ void* __array_create(int64_t size) {
 
 // Missing utility functions
 void __set_executable_memory(void* memory, size_t size) {
-    std::cout << "DEBUG: __set_executable_memory called with " << memory << " size=" << size << std::endl;
     // Set the global executable memory pointer
     std::lock_guard<std::mutex> lock(g_executable_memory.mutex);
     g_executable_memory.ptr = memory;
@@ -545,18 +544,15 @@ extern std::atomic<int64_t> g_active_goroutine_count;
 extern "C" void __set_goroutine_context(int64_t is_goroutine) {
     bool was_goroutine = g_is_goroutine_context;
     g_is_goroutine_context = (is_goroutine != 0);
-    std::cout << "DEBUG: Set goroutine context to " << g_is_goroutine_context << std::endl;
     
     if (g_is_goroutine_context && !was_goroutine) {
         // Setting up goroutine context
         // Increment active goroutine count
         g_active_goroutine_count.fetch_add(1);
-        std::cout << "DEBUG: Incremented active goroutine count to " << g_active_goroutine_count.load() << std::endl;
     } else if (!g_is_goroutine_context && was_goroutine) {
         // Cleaning up goroutine context
         // Decrement active goroutine count
         g_active_goroutine_count.fetch_sub(1);
-        std::cout << "DEBUG: Decremented active goroutine count to " << g_active_goroutine_count.load() << std::endl;
     }
 }
 
@@ -566,7 +562,6 @@ extern "C" void __set_goroutine_context(int64_t is_goroutine) {
 // Ultra-High-Performance Direct Address Goroutine Spawn
 namespace gots {
 void* __goroutine_spawn_func_ptr(void* func_ptr, void* arg) {
-    std::cout << "DEBUG: __goroutine_spawn_func_ptr called with func_ptr: " << func_ptr << std::endl;
     
     // Cast function pointer to proper type and spawn goroutine directly
     // This is the FASTEST possible goroutine spawn - zero overhead, direct address call

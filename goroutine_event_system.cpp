@@ -24,7 +24,6 @@ Goroutine::Goroutine(uint64_t id, std::function<void()> task, std::shared_ptr<Go
         parent->child_count_.fetch_add(1);
     }
     
-    std::cout << "DEBUG: Created goroutine " << id_ << std::endl;
 }
 
 Goroutine::~Goroutine() {
@@ -42,7 +41,6 @@ Goroutine::~Goroutine() {
         thread_.detach();
     }
     
-    std::cout << "DEBUG: Destroyed goroutine " << id_ << std::endl;
 }
 
 void Goroutine::start() {
@@ -54,14 +52,12 @@ void Goroutine::start() {
         self->run();
     });
     
-    std::cout << "DEBUG: Started goroutine " << id_ << " on thread" << std::endl;
 }
 
 void Goroutine::run() {
     // Set thread-local context
     set_current_goroutine(shared_from_this());
     
-    std::cout << "DEBUG: Goroutine " << id_ << " beginning execution" << std::endl;
     
     try {
         // Execute main task
@@ -71,7 +67,6 @@ void Goroutine::run() {
         
         // Main task finished, but we may need to wait for children/async
         state_.store(GoroutineState::FINISHED_WAITING_FOR_CHILDREN);
-        std::cout << "DEBUG: Goroutine " << id_ << " main task completed, entering event loop" << std::endl;
         
     } catch (const std::exception& e) {
         std::cerr << "ERROR: Goroutine " << id_ << " main task failed: " << e.what() << std::endl;
@@ -85,16 +80,13 @@ void Goroutine::run() {
     notify_parent_completion();
     
     state_.store(GoroutineState::COMPLETED);
-    std::cout << "DEBUG: Goroutine " << id_ << " completed execution" << std::endl;
 }
 
 void Goroutine::run_event_loop() {
-    std::cout << "DEBUG: Goroutine " << id_ << " starting event loop" << std::endl;
     
     std::unique_lock<std::mutex> lock(event_mutex_);
     
     while (should_continue_event_loop()) {
-        std::cout << "DEBUG: Goroutine " << id_ << " event loop iteration" << std::endl;
         std::cout << "  - Async events: " << async_events_.size() << std::endl;
         std::cout << "  - Timers: " << timers_.size() << std::endl;
         std::cout << "  - Async handles: " << pending_async_handles_.size() << std::endl;
@@ -105,7 +97,6 @@ void Goroutine::run_event_loop() {
             auto event = async_events_.front();
             async_events_.pop();
             
-            std::cout << "DEBUG: Processing async event " << event.id << std::endl;
             
             // Unlock while executing callback to prevent deadlock
             lock.unlock();
@@ -132,7 +123,6 @@ void Goroutine::run_event_loop() {
             auto sleep_duration = *next_timer_time - std::chrono::steady_clock::now();
             auto sleep_ms = std::chrono::duration_cast<std::chrono::milliseconds>(sleep_duration).count();
             
-            std::cout << "DEBUG: Goroutine " << id_ << " waiting " << sleep_ms << "ms until next timer" << std::endl;
             
             event_cv_.wait_until(lock, *next_timer_time, [this] {
                 return should_exit_loop_.load() || 
@@ -144,7 +134,6 @@ void Goroutine::run_event_loop() {
             
         } else if (has_pending_async_handles()) {
             // No timers, but we have servers/etc. waiting for events
-            std::cout << "DEBUG: Goroutine " << id_ << " waiting for async events (no timers)" << std::endl;
             event_cv_.wait(lock, [this] {
                 return should_exit_loop_.load() || 
                        !async_events_.empty() ||
@@ -154,11 +143,9 @@ void Goroutine::run_event_loop() {
         } else {
             // No timers, no async handles - can we exit?
             if (can_exit_event_loop()) {
-                std::cout << "DEBUG: Goroutine " << id_ << " can exit event loop" << std::endl;
                 break;
             } else {
                 // Waiting for children to complete
-                std::cout << "DEBUG: Goroutine " << id_ << " waiting for " << child_count_.load() << " children to complete" << std::endl;
                 event_cv_.wait(lock, [this] {
                     return should_exit_loop_.load() || 
                            can_exit_event_loop();
@@ -167,12 +154,10 @@ void Goroutine::run_event_loop() {
         }
     }
     
-    std::cout << "DEBUG: Goroutine " << id_ << " exiting event loop" << std::endl;
 }
 
 bool Goroutine::should_continue_event_loop() const {
     if (should_exit_loop_.load()) {
-        std::cout << "DEBUG: should_continue_event_loop: exit flag set" << std::endl;
         return false;
     }
     
@@ -183,7 +168,6 @@ bool Goroutine::should_continue_event_loop() const {
     
     bool should_continue = has_async_events || has_timers || has_handles || has_children;
     
-    std::cout << "DEBUG: should_continue_event_loop: " << should_continue 
               << " (events:" << has_async_events 
               << " timers:" << has_timers 
               << " handles:" << has_handles 
@@ -198,7 +182,6 @@ bool Goroutine::can_exit_event_loop() const {
                    pending_async_handles_.empty() &&   // No active handles
                    child_count_.load() == 0;           // No children
                    
-    std::cout << "DEBUG: can_exit_event_loop: " << can_exit << std::endl;
     return can_exit;
 }
 
@@ -214,7 +197,6 @@ uint64_t Goroutine::add_timer(uint64_t delay_ms, std::function<void()> callback,
     auto timer_id = next_timer_id_.fetch_add(1);
     auto expiry = std::chrono::steady_clock::now() + std::chrono::milliseconds(delay_ms);
     
-    std::cout << "DEBUG: Adding timer " << timer_id << " with " << delay_ms << "ms delay" << std::endl;
     
     {
         std::lock_guard<std::mutex> lock(event_mutex_);
@@ -232,7 +214,6 @@ uint64_t Goroutine::add_timer(uint64_t delay_ms, std::function<void()> callback,
         
         if (is_earlier) {
             has_timer_changes_.store(true);  // Signal early wake-up needed
-            std::cout << "DEBUG: Timer " << timer_id << " is earlier, setting wake-up flag" << std::endl;
         }
     }
     
@@ -242,7 +223,6 @@ uint64_t Goroutine::add_timer(uint64_t delay_ms, std::function<void()> callback,
 }
 
 bool Goroutine::cancel_timer(uint64_t timer_id) {
-    std::cout << "DEBUG: Cancelling timer " << timer_id << std::endl;
     
     {
         std::lock_guard<std::mutex> lock(event_mutex_);
@@ -272,13 +252,11 @@ void Goroutine::process_expired_timers_locked() {
         } else {
             // Remove from cancelled set
             cancelled_timers_.erase(timer.id);
-            std::cout << "DEBUG: Skipping cancelled timer " << timer.id << std::endl;
         }
     }
     
     // Execute expired timers (unlock during execution to prevent deadlock)
     for (auto& timer : expired_timers) {
-        std::cout << "DEBUG: Executing timer " << timer.id << std::endl;
         
         event_mutex_.unlock();
         try {
@@ -300,11 +278,9 @@ void Goroutine::process_expired_timers_locked() {
                     true,
                     timer.interval_duration
                 });
-                std::cout << "DEBUG: Rescheduled interval timer " << timer.id << std::endl;
             } else {
                 // Timer was cancelled during execution, remove from cancelled set
                 cancelled_timers_.erase(timer.id);
-                std::cout << "DEBUG: Interval timer " << timer.id << " was cancelled, not rescheduling" << std::endl;
             }
         }
     }
@@ -330,7 +306,6 @@ void Goroutine::clean_cancelled_timers_locked() {
         if (cancelled_timers_.find(timer.id) == cancelled_timers_.end()) {
             remaining_timers.push_back(timer);
         } else {
-            std::cout << "DEBUG: Cleaned cancelled timer " << timer.id << std::endl;
         }
     }
     
@@ -348,7 +323,6 @@ void Goroutine::clean_cancelled_timers_locked() {
 // ============================================================================
 
 void Goroutine::queue_async_event(AsyncEvent event) {
-    std::cout << "DEBUG: Queueing async event " << event.id << std::endl;
     
     {
         std::lock_guard<std::mutex> lock(event_mutex_);
@@ -361,7 +335,6 @@ void Goroutine::queue_async_event(AsyncEvent event) {
 uint64_t Goroutine::add_async_handle(AsyncHandleType type, void* handle_data) {
     auto handle_id = next_handle_id_.fetch_add(1);
     
-    std::cout << "DEBUG: Adding async handle " << handle_id << std::endl;
     
     {
         std::lock_guard<std::mutex> lock(event_mutex_);
@@ -373,7 +346,6 @@ uint64_t Goroutine::add_async_handle(AsyncHandleType type, void* handle_data) {
 }
 
 void Goroutine::remove_async_handle(uint64_t handle_id) {
-    std::cout << "DEBUG: Removing async handle " << handle_id << std::endl;
     
     {
         std::lock_guard<std::mutex> lock(event_mutex_);
@@ -396,7 +368,6 @@ bool Goroutine::has_async_handle(uint64_t handle_id) const {
 uint64_t Goroutine::start_server(int port, std::function<void(int)> handler) {
     auto handle_id = add_async_handle(AsyncHandleType::SERVER_LISTENING);
     
-    std::cout << "DEBUG: Starting server on port " << port << " with handle " << handle_id << std::endl;
     
     // Start server in background thread
     std::thread([this, handle_id, port, handler]() {
@@ -407,7 +378,6 @@ uint64_t Goroutine::start_server(int port, std::function<void(int)> handler) {
 }
 
 void Goroutine::stop_server(uint64_t server_id) {
-    std::cout << "DEBUG: Stopping server " << server_id << std::endl;
     remove_async_handle(server_id);
 }
 
@@ -441,7 +411,6 @@ void Goroutine::run_server_thread(uint64_t handle_id, int port, std::function<vo
         return;
     }
     
-    std::cout << "DEBUG: Server listening on port " << port << std::endl;
     
     // Accept connections while server is active
     while (server_running(handle_id)) {
@@ -450,7 +419,6 @@ void Goroutine::run_server_thread(uint64_t handle_id, int port, std::function<vo
         
         int client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &client_len);
         if (client_fd >= 0) {
-            std::cout << "DEBUG: Server accepted connection, client_fd=" << client_fd << std::endl;
             
             // Queue async event for main goroutine
             auto event_id = next_event_id_.fetch_add(1);
@@ -458,7 +426,6 @@ void Goroutine::run_server_thread(uint64_t handle_id, int port, std::function<vo
                 event_id,
                 AsyncEventType::SERVER_REQUEST,
                 [handler, client_fd]() { 
-                    std::cout << "DEBUG: Executing server handler for client " << client_fd << std::endl;
                     handler(client_fd); 
                 },
                 nullptr
@@ -473,7 +440,6 @@ void Goroutine::run_server_thread(uint64_t handle_id, int port, std::function<vo
     }
     
     close(server_fd);
-    std::cout << "DEBUG: Server thread for handle " << handle_id << " exiting" << std::endl;
 }
 
 bool Goroutine::server_running(uint64_t handle_id) {
@@ -488,7 +454,6 @@ std::shared_ptr<Goroutine> Goroutine::spawn_child(std::function<void()> task) {
     auto child_id = MainProgramController::instance().get_next_goroutine_id();
     auto child = std::make_shared<Goroutine>(child_id, task, shared_from_this());
     
-    std::cout << "DEBUG: Goroutine " << id_ << " spawning child " << child_id << std::endl;
     
     // Start child immediately
     child->start();
@@ -498,7 +463,6 @@ std::shared_ptr<Goroutine> Goroutine::spawn_child(std::function<void()> task) {
 
 void Goroutine::child_completed() {
     int remaining = child_count_.fetch_sub(1) - 1;
-    std::cout << "DEBUG: Goroutine " << id_ << " child completed, " << remaining << " children remaining" << std::endl;
     
     if (remaining == 0) {
         // All children done, wake up event loop
@@ -511,7 +475,6 @@ void Goroutine::notify_parent_completion() {
         parent->child_completed();
     } else {
         // This is the main goroutine
-        std::cout << "DEBUG: Main goroutine completed, signaling program completion" << std::endl;
         MainProgramController::instance().signal_program_completion();
     }
 }
@@ -530,7 +493,6 @@ void Goroutine::trigger_event_loop() {
 // ============================================================================
 
 void MainProgramController::run_main_goroutine(std::function<void()> main_task) {
-    std::cout << "DEBUG: Starting main goroutine" << std::endl;
     
     // Reset state for new test
     reset_for_new_test();
@@ -543,14 +505,12 @@ void MainProgramController::run_main_goroutine(std::function<void()> main_task) 
     // Start the main goroutine (it manages its own thread)
     main_ref->start();
     
-    std::cout << "DEBUG: Main goroutine thread started, waiting for completion..." << std::endl;
 }
 
 void MainProgramController::wait_for_completion() {
     std::unique_lock<std::mutex> lock(completion_mutex_);
     completion_cv_.wait(lock, [this] { return program_completed_.load(); });
     
-    std::cout << "DEBUG: Main program completed" << std::endl;
 }
 
 void MainProgramController::signal_program_completion() {
@@ -633,11 +593,9 @@ void closeServer(uint64_t server_id) {
 }
 
 void initialize_goroutine_system() {
-    std::cout << "DEBUG: Goroutine system initialized" << std::endl;
 }
 
 void shutdown_goroutine_system() {
-    std::cout << "DEBUG: Goroutine system shutdown" << std::endl;
 }
 
 } // namespace gots

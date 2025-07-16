@@ -22,30 +22,23 @@ FunctionCompilationManager& FunctionCompilationManager::instance() {
 }
 
 void FunctionCompilationManager::discover_functions(const std::vector<std::unique_ptr<ASTNode>>& ast) {
-    std::cout << "DEBUG: Starting Phase 1 - Function Discovery" << std::endl;
-    std::cout << "DEBUG: AST has " << ast.size() << " top-level nodes" << std::endl;
     
     for (size_t i = 0; i < ast.size(); i++) {
         if (ast[i]) {
-            std::cout << "DEBUG: Processing AST node " << i << " type: " << typeid(*ast[i]).name() << std::endl;
             discover_functions_recursive(ast[i].get());
         }
     }
     
-    std::cout << "DEBUG: Phase 1 Complete - Discovered " << functions_.size() << " functions" << std::endl;
     for (const auto& order : compilation_order_) {
-        std::cout << "DEBUG: Function to compile: " << order << std::endl;
     }
 }
 
 void FunctionCompilationManager::discover_functions_recursive(ASTNode* node) {
     if (!node) return;
     
-    std::cout << "DEBUG: Traversing node type: " << typeid(*node).name() << " at " << node << std::endl;
     
     // Check if this node is a function expression
     if (auto func_expr = dynamic_cast<FunctionExpression*>(node)) {
-        std::cout << "DEBUG: Discovered function expression (raw pointer): " << func_expr << std::endl;
         
         // Create a shared_ptr with a no-op deleter (we don't own the raw pointer)
         auto shared_func = std::shared_ptr<FunctionExpression>(func_expr, [](FunctionExpression*){});
@@ -54,11 +47,8 @@ void FunctionCompilationManager::discover_functions_recursive(ASTNode* node) {
         // CRITICAL: Set the assigned name on the original AST node
         // This ensures the name is preserved when the AST is processed during Phase 3
         func_expr->set_compilation_assigned_name(func_name);
-        std::cout << "DEBUG: Assigned name " << func_name << " to function expression at " << func_expr << std::endl;
-        std::cout << "DEBUG: Verifying assigned name: " << func_expr->compilation_assigned_name_ << std::endl;
         
         // CRITICAL: We must traverse into the function body to find nested function expressions
-        std::cout << "DEBUG: Traversing function body with " << func_expr->body.size() << " statements" << std::endl;
         for (const auto& stmt : func_expr->body) {
             if (stmt) {
                 discover_functions_recursive(stmt.get());
@@ -71,7 +61,6 @@ void FunctionCompilationManager::discover_functions_recursive(ASTNode* node) {
     // For function calls, recurse into arguments to find nested function expressions
     if (auto func_call = dynamic_cast<FunctionCall*>(node)) {
         if (func_call->is_goroutine) {
-            std::cout << "DEBUG: Found goroutine call to: " << func_call->name << std::endl;
         }
         
         // Recurse into arguments
@@ -171,43 +160,35 @@ std::string FunctionCompilationManager::register_function(std::shared_ptr<Functi
     functions_[func_name] = std::move(func_info);
     compilation_order_.push_back(func_name);
     
-    std::cout << "DEBUG: Registered function: " << func_name << " with ID: " << assigned_id << std::endl;
     return func_name;
 }
 
 void FunctionCompilationManager::compile_all_functions(CodeGenerator& gen, TypeInference& types) {
-    std::cout << "DEBUG: Starting Phase 2 - Function Compilation" << std::endl;
     
     total_function_code_size_ = 0;
     
     // CRITICAL: Compile functions in REVERSE order (innermost first)
     // This ensures that when we compile an outer function, all inner functions are already compiled
-    std::cout << "DEBUG: Compiling functions in reverse order (innermost first)" << std::endl;
     
     for (int i = compilation_order_.size() - 1; i >= 0; i--) {
         const std::string& func_name = compilation_order_[i];
         auto it = functions_.find(func_name);
         if (it == functions_.end()) {
-            std::cout << "DEBUG: Function " << func_name << " not found in function registry!" << std::endl;
             continue;
         }
         
         FunctionInfo* func_info = it->second.get();
         if (func_info->is_compiled) {
-            std::cout << "DEBUG: Function " << func_name << " already compiled, skipping" << std::endl;
             continue;
         }
         
-        std::cout << "DEBUG: Compiling function: " << func_name << " (index " << i << ")" << std::endl;
         
         // Record start position
         size_t start_offset = gen.get_current_offset();
-        std::cout << "DEBUG: Function start offset: " << start_offset << std::endl;
         
         // Compile function body
         try {
             compile_function_body(gen, types, func_info);
-            std::cout << "DEBUG: Function body compilation completed for: " << func_name << std::endl;
         } catch (const std::exception& e) {
             std::cerr << "ERROR: Exception during function compilation: " << e.what() << std::endl;
             throw;
@@ -224,15 +205,12 @@ void FunctionCompilationManager::compile_all_functions(CodeGenerator& gen, TypeI
         
         total_function_code_size_ += func_info->code_size;
         
-        std::cout << "DEBUG: Compiled function " << func_name << " at offset " << start_offset 
-                  << " size " << func_info->code_size << std::endl;
+        // std::cout << " size " << func_info->code_size << std::endl;
     }
     
-    std::cout << "DEBUG: Phase 2 Complete - Total function code size: " << total_function_code_size_ << std::endl;
 }
 
 void FunctionCompilationManager::assign_function_addresses(void* executable_memory, size_t memory_size) {
-    std::cout << "DEBUG: Assigning function addresses in executable memory" << std::endl;
     
     uint8_t* memory_base = static_cast<uint8_t*>(executable_memory);
     
@@ -251,15 +229,12 @@ void FunctionCompilationManager::assign_function_addresses(void* executable_memo
         extern FunctionEntry g_function_table[];
         if (func_info->function_id > 0) {
             g_function_table[func_info->function_id].func_ptr = func_info->address;
-            std::cout << "DEBUG: Updated fast function table[" << func_info->function_id << "] = " << func_info->address << std::endl;
         }
         
-        std::cout << "DEBUG: Function " << func_name << " assigned address " << func_info->address << std::endl;
     }
 }
 
 void FunctionCompilationManager::register_function_in_runtime() {
-    std::cout << "DEBUG: Registering functions in runtime system" << std::endl;
     
     for (const auto& pair : functions_) {
         const std::string& func_name = pair.first;
@@ -268,7 +243,6 @@ void FunctionCompilationManager::register_function_in_runtime() {
         if (func_info->is_compiled && func_info->address) {
             // Register in runtime system
             __register_function_fast(func_info->address, 0, 0);
-            std::cout << "DEBUG: Registered " << func_name << " at address " << func_info->address << std::endl;
         }
     }
 }
@@ -314,7 +288,6 @@ size_t FunctionCompilationManager::get_total_function_code_size() const {
 }
 
 void FunctionCompilationManager::print_function_registry() const {
-    std::cout << "DEBUG: Function Registry:" << std::endl;
     for (const auto& pair : functions_) {
         const FunctionInfo* info = pair.second.get();
         std::cout << "  " << pair.first << " -> " << info->address 
@@ -343,7 +316,6 @@ void FunctionCompilationManager::compile_function_body(CodeGenerator& gen, TypeI
         return;
     }
     
-    std::cout << "DEBUG: Compiling function body for: " << func_info->name << std::endl;
     
     // Emit function label
     gen.emit_label(func_info->name);
@@ -367,16 +339,11 @@ void FunctionCompilationManager::compile_function_body(CodeGenerator& gen, TypeI
     local_types.reset_for_function();
     
     // Generate function body statements
-    std::cout << "DEBUG: Generating " << func_expr->body.size() << " statements in function body" << std::endl;
     for (size_t i = 0; i < func_expr->body.size(); i++) {
         if (func_expr->body[i]) {
-            std::cout << "DEBUG: Generating statement " << i << " in function body" << std::endl;
-            std::cout << "DEBUG: Code size before statement " << i << ": " << gen.get_current_offset() << std::endl;
             
             try {
                 func_expr->body[i]->generate_code(gen, local_types);
-                std::cout << "DEBUG: Statement " << i << " generated successfully" << std::endl;
-                std::cout << "DEBUG: Code size after statement " << i << ": " << gen.get_current_offset() << std::endl;
             } catch (const std::exception& e) {
                 std::cerr << "ERROR: Exception in statement " << i << ": " << e.what() << std::endl;
                 throw;
@@ -389,7 +356,6 @@ void FunctionCompilationManager::compile_function_body(CodeGenerator& gen, TypeI
     
     gen.emit_epilogue();
     
-    std::cout << "DEBUG: Function body compilation completed for: " << func_info->name << std::endl;
 }
 
 } // namespace gots
