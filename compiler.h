@@ -6,6 +6,7 @@
 #include <memory>
 #include <cstdint>
 #include <chrono>
+#include "simple_array.h"
 
 namespace gots {
 
@@ -85,12 +86,13 @@ enum class TokenType {
     IF, FOR, WHILE, RETURN,
     SWITCH, CASE, DEFAULT, BREAK,
     IMPORT, EXPORT, FROM, AS, DEFAULT_EXPORT,
-    TENSOR, NEW,
+    TENSOR, NEW, ARRAY,
     CLASS, EXTENDS, SUPER, THIS, CONSTRUCTOR,
     PUBLIC, PRIVATE, PROTECTED, STATIC,
     EACH, IN, PIPE,  // Added for for-each syntax
     OPERATOR,  // Added for operator overloading
     LPAREN, RPAREN, LBRACE, RBRACE, LBRACKET, RBRACKET,
+    SLICE_BRACKET,  // Added for [:] slice operator
     SEMICOLON, COMMA, DOT, COLON, QUESTION,
     ASSIGN, PLUS, MINUS, MULTIPLY, DIVIDE, MODULO, POWER,
     EQUAL, NOT_EQUAL, STRICT_EQUAL, LESS, GREATER, LESS_EQUAL, GREATER_EQUAL,
@@ -106,7 +108,7 @@ enum class DataType {
     UINT8, UINT16, UINT32, UINT64,
     FLOAT32, FLOAT64,
     BOOLEAN, STRING, REGEX,
-    TENSOR, PROMISE, FUNCTION,
+    TENSOR, PROMISE, FUNCTION, SLICE, ARRAY,
     CLASS_INSTANCE,  // For class instances
     RUNTIME_OBJECT,  // For runtime.x property access optimization
     NUMBER = FLOAT64,  // JavaScript compatibility: number is float64
@@ -601,9 +603,23 @@ struct TypedArrayLiteral : ExpressionNode {
     void generate_code(CodeGenerator& gen, TypeInference& types) override;
 };
 
+struct SliceExpression : ExpressionNode {
+    int64_t start;
+    int64_t end;
+    int64_t step;
+    bool start_specified;
+    bool end_specified;
+    bool step_specified;
+    
+    SliceExpression() : start(0), end(-1), step(1), start_specified(false), end_specified(false), step_specified(false) {}
+    SliceExpression(int64_t s, int64_t e, int64_t st) : start(s), end(e), step(st), start_specified(true), end_specified(true), step_specified(true) {}
+    void generate_code(CodeGenerator& gen, TypeInference& types) override;
+};
+
 struct ArrayAccess : ExpressionNode {
     std::unique_ptr<ExpressionNode> object;
     std::unique_ptr<ExpressionNode> index;
+    std::vector<std::unique_ptr<SliceExpression>> slices;  // For multi-dimensional slicing
     bool is_slice_expression = false;  // True if index contains colons, ellipsis, etc.
     std::string slice_expression;       // Raw string representation for complex indexing
     ArrayAccess(std::unique_ptr<ExpressionNode> obj, std::unique_ptr<ExpressionNode> idx)
@@ -910,6 +926,7 @@ private:
     std::unique_ptr<MethodDecl> parse_method_declaration();
     std::unique_ptr<ConstructorDecl> parse_constructor_declaration(const std::string& class_name);
     std::unique_ptr<OperatorOverloadDecl> parse_operator_overload_declaration(const std::string& class_name);
+    std::unique_ptr<SliceExpression> parse_slice_expression();
     
     DataType parse_type();
     

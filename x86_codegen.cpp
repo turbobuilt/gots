@@ -249,6 +249,25 @@ void X86CodeGen::emit_mod_reg_reg(int dst, int src) {
 static std::unordered_map<std::string, void*> g_runtime_function_table;
 static bool g_runtime_table_initialized = false;
 
+// Simple Array runtime functions (extern C declarations)
+extern "C" {
+    extern void* __simple_array_create(double* values, int64_t size);
+    extern void* __simple_array_zeros(int64_t size);
+    extern void* __simple_array_ones(int64_t size);
+    extern void __simple_array_push(void* array, double value);
+    extern double __simple_array_pop(void* array);
+    extern double __simple_array_get(void* array, int64_t index);
+    extern void __simple_array_set(void* array, int64_t index, double value);
+    extern int64_t __simple_array_length(void* array);
+    extern double __simple_array_sum(void* array);
+    extern double __simple_array_mean(void* array);
+    extern void* __simple_array_shape(void* array);
+    extern const char* __simple_array_tostring(void* array);
+    extern void* __simple_array_slice(void* array, int64_t start, int64_t end, int64_t step);
+    extern void* __simple_array_slice_all(void* array);
+    extern const char* __dynamic_method_toString(void* obj);
+}
+
 static void initialize_runtime_function_table() {
     if (g_runtime_table_initialized) return;
     
@@ -310,6 +329,25 @@ static void initialize_runtime_function_table() {
     g_runtime_function_table["__channel_close"] = (void*)__channel_close;
     g_runtime_function_table["__channel_delete"] = (void*)__channel_delete;
     g_runtime_function_table["__print_scheduler_stats"] = (void*)__print_scheduler_stats;
+    
+    // Register Simple Array runtime functions
+    
+    g_runtime_function_table["__simple_array_create"] = (void*)__simple_array_create;
+    g_runtime_function_table["__simple_array_zeros"] = (void*)__simple_array_zeros;
+    g_runtime_function_table["__simple_array_ones"] = (void*)__simple_array_ones;
+    g_runtime_function_table["__simple_array_push"] = (void*)__simple_array_push;
+    g_runtime_function_table["__simple_array_pop"] = (void*)__simple_array_pop;
+    g_runtime_function_table["__simple_array_get"] = (void*)__simple_array_get;
+    g_runtime_function_table["__simple_array_set"] = (void*)__simple_array_set;
+    g_runtime_function_table["__simple_array_length"] = (void*)__simple_array_length;
+    g_runtime_function_table["__simple_array_sum"] = (void*)__simple_array_sum;
+    g_runtime_function_table["__simple_array_mean"] = (void*)__simple_array_mean;
+    g_runtime_function_table["__simple_array_shape"] = (void*)__simple_array_shape;
+    g_runtime_function_table["__simple_array_tostring"] = (void*)__simple_array_tostring;
+    g_runtime_function_table["__simple_array_slice"] = (void*)__simple_array_slice;
+    g_runtime_function_table["__simple_array_slice_all"] = (void*)__simple_array_slice_all;
+    g_runtime_function_table["__console_log_number"] = (void*)__console_log_number;
+    g_runtime_function_table["__dynamic_method_toString"] = (void*)__dynamic_method_toString;
     
     g_runtime_table_initialized = true;
 }

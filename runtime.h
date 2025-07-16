@@ -405,19 +405,19 @@ public:
 // Global string pool instance
 extern StringPool global_string_pool;
 
-// Legacy Array structure for backward compatibility
-struct Array {
+// Simple legacy array for basic operations
+struct LegacyArray {
     int64_t* data;
     int64_t size;
     int64_t capacity;
     
-    Array() : data(nullptr), size(0), capacity(0) {}
+    LegacyArray() : data(nullptr), size(0), capacity(0) {}
     
-    Array(int64_t initial_capacity) : size(0), capacity(initial_capacity) {
+    LegacyArray(int64_t initial_capacity) : size(0), capacity(initial_capacity) {
         data = new int64_t[capacity];
     }
     
-    virtual ~Array() {
+    ~LegacyArray() {
         if (data) delete[] data;
     }
     
@@ -440,51 +440,6 @@ struct Array {
             return data[--size];
         }
         return 0;
-    }
-};
-
-// High-performance JavaScript-compatible match result array
-// Uses lazy loading for JavaScript properties (index, input, groups)
-// to maintain performance while providing full compatibility when needed
-struct MatchArray : public Array {
-    // Lazy-loaded properties (computed only when accessed)
-    mutable int cached_index = -2;        // -2 = not computed, -1 = no match, >=0 = computed
-    mutable GoTSString* cached_input = nullptr;
-    mutable bool groups_accessed = false;
-    
-    // Original data for lazy computation (stored only when properties might be needed)
-    std::string original_text;
-    std::string pattern;
-    size_t match_position;
-    
-    MatchArray(int64_t initial_capacity, const std::string& text, const std::string& pat, size_t pos) 
-        : Array(initial_capacity), original_text(text), pattern(pat), match_position(pos) {}
-    
-    // High-performance property access - computed on demand
-    int get_index() const {
-        if (cached_index == -2) {
-            cached_index = static_cast<int>(match_position);
-        }
-        return cached_index;
-    }
-    
-    GoTSString* get_input() const {
-        if (!cached_input) {
-            cached_input = new GoTSString(original_text.c_str());
-        }
-        return cached_input;
-    }
-    
-    // groups is always undefined in basic implementation
-    void* get_groups() const {
-        groups_accessed = true;
-        return nullptr; // undefined
-    }
-    
-    ~MatchArray() override {
-        if (cached_input) {
-            delete cached_input;
-        }
     }
 };
 

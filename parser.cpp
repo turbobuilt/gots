@@ -460,67 +460,65 @@ std::unique_ptr<ExpressionNode> Parser::parse_call() {
             // Handle array access or operator[] overload
             auto object_expr = std::move(expr);
             
-            // Save current position in case we need to backtrack
-            size_t saved_pos = pos;
-            std::unique_ptr<ExpressionNode> index_expr;
-            bool is_slice_expression = false;
-            std::string slice_content;
+            // Check if this looks like a slice expression using lookahead
+            bool is_slice = false;
+            size_t lookahead_pos = pos;
+            int bracket_depth = 1;
             
-            try {
-                // Try to parse as a normal expression first
-                index_expr = parse_expression();
+            // Look ahead to detect slice patterns (contains colons)
+            while (lookahead_pos < tokens.size() && bracket_depth > 0) {
+                const auto& token = tokens[lookahead_pos];
                 
-                if (!match(TokenType::RBRACKET)) {
-                    throw std::runtime_error("Expected ']' after array index");
+                if (token.type == TokenType::LBRACKET) {
+                    bracket_depth++;
+                } else if (token.type == TokenType::RBRACKET) {
+                    bracket_depth--;
+                } else if (token.type == TokenType::COLON && bracket_depth == 1) {
+                    is_slice = true;
+                    break;
                 }
-            } catch (const std::exception&) {
-                // Parsing as expression failed, treat as slice/string content
-                pos = saved_pos;  // Reset to position after '['
-                
-                // Collect all tokens until ']' as a string
+                lookahead_pos++;
+            }
+            
+            if (is_slice) {
+                // Collect tokens as slice string literal  
                 std::string raw_content;
-                int bracket_depth = 1;
                 
-                while (pos < tokens.size() && bracket_depth > 0) {
-                    const auto& token = tokens[pos];
-                    
-                    if (token.type == TokenType::LBRACKET) {
-                        bracket_depth++;
-                    } else if (token.type == TokenType::RBRACKET) {
-                        bracket_depth--;
-                        if (bracket_depth == 0) {
-                            break; // Don't include the closing ']'
-                        }
-                    }
-                    
+                while (pos < tokens.size() && !check(TokenType::RBRACKET)) {
                     if (!raw_content.empty()) {
                         raw_content += " ";
                     }
-                    raw_content += token.value;
+                    raw_content += current_token().value;
                     pos++;
                 }
                 
-                if (bracket_depth > 0) {
-                    throw std::runtime_error("Expected ']' after array index");
+                if (!match(TokenType::RBRACKET)) {
+                    throw std::runtime_error("Expected ']' after slice expression");
                 }
                 
-                // Consume the closing ']'
+                auto index_expr = std::make_unique<StringLiteral>(raw_content);
+                auto array_access = std::make_unique<ArrayAccess>(std::move(object_expr), std::move(index_expr));
+                array_access->is_slice_expression = true;
+                array_access->slice_expression = raw_content;
+                expr = std::move(array_access);
+            } else {
+                // Parse as normal expression
+                auto index_expr = parse_expression();
+                
                 if (!match(TokenType::RBRACKET)) {
                     throw std::runtime_error("Expected ']' after array index");
                 }
                 
-                // Create a string literal with the raw content
-                index_expr = std::make_unique<StringLiteral>(raw_content);
-                is_slice_expression = true;
-                slice_content = raw_content;
+                auto array_access = std::make_unique<ArrayAccess>(std::move(object_expr), std::move(index_expr));
+                expr = std::move(array_access);
             }
-            
-            // Create ArrayAccess node
-            auto array_access = std::make_unique<ArrayAccess>(std::move(object_expr), std::move(index_expr));
-            if (is_slice_expression) {
-                array_access->is_slice_expression = true;
-                array_access->slice_expression = slice_content;
-            }
+        } else if (match(TokenType::SLICE_BRACKET)) {
+            // Handle [:]  slice syntax as a special case
+            auto object_expr = std::move(expr);
+            auto slice_literal = std::make_unique<StringLiteral>(":");
+            auto array_access = std::make_unique<ArrayAccess>(std::move(object_expr), std::move(slice_literal));
+            array_access->is_slice_expression = true;
+            array_access->slice_expression = ":";
             expr = std::move(array_access);
         } else {
             break;
@@ -576,7 +574,44 @@ std::unique_ptr<ExpressionNode> Parser::parse_primary() {
         
         if (!check(TokenType::RBRACKET)) {
             do {
-                array_literal->elements.push_back(parse_expression());
+                // Check if this element looks like a slice expression using lookahead
+                bool is_slice = false;
+                size_t lookahead_pos = pos;
+                
+                // Look ahead to see if we encounter a colon before comma/bracket
+                while (lookahead_pos < tokens.size()) {
+                    const auto& token = tokens[lookahead_pos];
+                    
+                    if (token.type == TokenType::COMMA || token.type == TokenType::RBRACKET) {
+                        break; // End of element
+                    } else if (token.type == TokenType::COLON) {
+                        is_slice = true;
+                        break; // Found slice pattern
+                    }
+                    lookahead_pos++;
+                }
+                
+                if (is_slice) {
+                    // Collect tokens as slice string literal
+                    std::string raw_content;
+                    
+                    while (pos < tokens.size() && 
+                           !check(TokenType::COMMA) && 
+                           !check(TokenType::RBRACKET)) {
+                        if (!raw_content.empty()) {
+                            raw_content += " ";
+                        }
+                        raw_content += current_token().value;
+                        pos++;
+                    }
+                    
+                    auto element_expr = std::make_unique<StringLiteral>(raw_content);
+                    array_literal->elements.push_back(std::move(element_expr));
+                } else {
+                    // Parse as normal expression
+                    auto element_expr = parse_expression();
+                    array_literal->elements.push_back(std::move(element_expr));
+                }
             } while (match(TokenType::COMMA));
         }
         
@@ -1229,6 +1264,23 @@ std::unique_ptr<ASTNode> Parser::parse_expression_statement() {
 }
 
 DataType Parser::parse_type() {
+    // Handle typed array syntax like [int32], [float32], etc.
+    if (match(TokenType::LBRACKET)) {
+        if (!match(TokenType::IDENTIFIER)) {
+            throw std::runtime_error("Expected type name in array brackets");
+        }
+        
+        std::string element_type = tokens[pos - 1].value;
+        
+        if (!match(TokenType::RBRACKET)) {
+            throw std::runtime_error("Expected ']' after array element type");
+        }
+        
+        // For now, all typed arrays return ARRAY type
+        // The element type information would be stored elsewhere in a full implementation
+        return DataType::ARRAY;
+    }
+    
     if (!match(TokenType::IDENTIFIER)) {
         throw std::runtime_error("Expected type name");
     }
@@ -1249,6 +1301,7 @@ DataType Parser::parse_type() {
     if (type_name == "boolean") return DataType::BOOLEAN;
     if (type_name == "string") return DataType::STRING;
     if (type_name == "tensor") return DataType::TENSOR;
+    if (type_name == "array") return DataType::ARRAY;
     if (type_name == "void") return DataType::VOID;
     if (type_name == "any") return DataType::ANY;
     

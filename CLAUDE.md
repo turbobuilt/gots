@@ -107,6 +107,11 @@ class Point {
     operator [] (p: Point, contents: string) {
         console.log(contents); // "anything goes here"
     }
+
+    operator [:] (p: Point, slice: Slice) {
+        // handles pytorch-style slicing: start:end:step
+        return new Point{ x: p.x, y: p.y }  // example implementation
+    }
     
     operator [] (p: Point, b) {
         console.log(b); // fallback handles any type
@@ -137,7 +142,27 @@ var y = new Array(values, shape) // create tensor of shape with given values
 var y: [int32] = [1,2,3];
 
 // support dot product, etc.
+
+// Pytorch-style slicing with [:] operator
+var z = y[:, 1:3, ::2];  // slice all first dim, 1-3 second dim, every 2nd third dim
+var w = y[1:];           // slice from index 1 to end
+var v = y[:5];           // slice from start to index 5
+var u = y[::2];          // slice every 2nd element
+
+// Slice type definition
+type Slice = {
+    start?: int64;    // optional start index (default: 0)
+    end?: int64;      // optional end index (default: length)
+    step?: int64;     // optional step size (default: 1)
+}
+
+// Usage examples:
+var slice1 = new Slice{ start: 1, end: 5 };       // 1:5
+var slice2 = new Slice{ step: 2 };                // ::2 
+var slice3 = new Slice{ start: 10 };              // 10:
 ```
+
+push/pop/length only supported on 1d array.
 
 It supports keyword function parameters
 

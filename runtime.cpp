@@ -385,6 +385,151 @@ void __array_push(void* array, int64_t value) {
     (void)value;
 }
 
+// Simplified Array runtime functions
+extern "C" void* __simple_array_create(double* values, int64_t size) {
+    Array* arr = new Array();
+    for (int64_t i = 0; i < size; i++) {
+        arr->push(values[i]);
+    }
+    return arr;
+}
+
+extern "C" void* __simple_array_zeros(int64_t size) {
+    if (size <= 0) {
+        // Create empty array
+        Array* arr = new Array();
+        return arr;
+    }
+    std::vector<size_t> shape = {static_cast<size_t>(size)};
+    Array* arr = new Array(Array::zeros(shape));
+    return arr;
+}
+
+extern "C" void* __simple_array_ones(int64_t size) {
+    std::vector<size_t> shape = {static_cast<size_t>(size)};
+    Array* arr = new Array(Array::ones(shape));
+    return arr;
+}
+
+extern "C" void __simple_array_push(void* array, double value) {
+    if (array) {
+        static_cast<Array*>(array)->push(value);
+    }
+}
+
+extern "C" double __simple_array_pop(void* array) {
+    if (array) {
+        return static_cast<Array*>(array)->pop();
+    }
+    return 0.0;
+}
+
+extern "C" double __simple_array_get(void* array, int64_t index) {
+    if (array) {
+        return (*static_cast<Array*>(array))[index];
+    }
+    return 0.0;
+}
+
+extern "C" void __simple_array_set(void* array, int64_t index, double value) {
+    if (array) {
+        (*static_cast<Array*>(array))[index] = value;
+    }
+}
+
+extern "C" int64_t __simple_array_length(void* array) {
+    if (array) {
+        return static_cast<int64_t>(static_cast<Array*>(array)->length());
+    }
+    return 0;
+}
+
+extern "C" double __simple_array_sum(void* array) {
+    if (array) {
+        return static_cast<Array*>(array)->sum();
+    }
+    return 0.0;
+}
+
+extern "C" double __simple_array_mean(void* array) {
+    if (array) {
+        return static_cast<Array*>(array)->mean();
+    }
+    return 0.0;
+}
+
+extern "C" void* __simple_array_shape(void* array) {
+    if (array) {
+        const std::vector<size_t>& shape = static_cast<Array*>(array)->shape();
+        std::vector<double> shape_as_doubles;
+        for (size_t dim : shape) {
+            shape_as_doubles.push_back(static_cast<double>(dim));
+        }
+        return new Array({shape_as_doubles.size()}, shape_as_doubles);
+    }
+    return nullptr;
+}
+
+extern "C" const char* __simple_array_tostring(void* array) {
+    if (array) {
+        std::string str = static_cast<Array*>(array)->toString();
+        return strdup(str.c_str());
+    }
+    return strdup("Array()");
+}
+
+extern "C" void* __simple_array_slice(void* array, int64_t start, int64_t end, int64_t step) {
+    if (array) {
+        Array sliced = static_cast<Array*>(array)->slice(start, end, step);
+        return new Array(sliced);
+    }
+    return nullptr;
+}
+
+extern "C" void* __simple_array_slice_all(void* array) {
+    if (array) {
+        Array sliced = static_cast<Array*>(array)->slice_all();
+        return new Array(sliced);
+    }
+    return nullptr;
+}
+
+double __simple_array_max(void* array) {
+    if (array) {
+        return static_cast<Array*>(array)->max();
+    }
+    return 0.0;
+}
+
+double __simple_array_min(void* array) {
+    if (array) {
+        return static_cast<Array*>(array)->min();
+    }
+    return 0.0;
+}
+
+// Helper function to get first dimension from shape array
+int64_t __simple_array_get_first_dimension(void* shape_array) {
+    if (shape_array) {
+        Array* arr = static_cast<Array*>(shape_array);
+        if (arr->length() > 0) {
+            return static_cast<int64_t>((*arr)[0]);
+        }
+    }
+    return 0;
+}
+
+// Array static factory methods
+void* __simple_array_arange(double start, double stop, double step) {
+    Array* arr = new Array(Array::arange(start, stop, step));
+    return arr;
+}
+
+void* __simple_array_linspace(double start, double stop, int64_t num) {
+    Array* arr = new Array(Array::linspace(start, stop, static_cast<size_t>(num)));
+    return arr;
+}
+
 // Timer management functions moved to goroutine_system.cpp
 
 } // extern "C"
@@ -449,5 +594,16 @@ extern "C" void* __get_executable_memory_base() {
 }
 
 // Timer system functions moved to goroutine_system.cpp
+
+extern "C" const char* __dynamic_method_toString(void* obj) {
+    // For now, we'll treat this as a simple array toString
+    // In a full implementation, this would check object type and call appropriate toString
+    if (obj) {
+        Array* array = static_cast<Array*>(obj);
+        std::string str = array->toString();
+        return strdup(str.c_str());
+    }
+    return strdup("undefined");
+}
 
 } // namespace gots

@@ -285,7 +285,15 @@ std::vector<Token> Lexer::tokenize() {
                     type = TokenType::RBRACE;
                     break;
                 case '[':
-                    type = TokenType::LBRACKET;
+                    advance();
+                    if (current_char() == ':' && peek_char() == ']') {
+                        advance(); // skip ':'
+                        type = TokenType::SLICE_BRACKET;
+                        value = "[:]";
+                    } else {
+                        pos--; column--;
+                        type = TokenType::LBRACKET;
+                    }
                     break;
                 case ']':
                     type = TokenType::RBRACKET;

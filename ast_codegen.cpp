@@ -693,7 +693,7 @@ void FunctionCall::generate_code(CodeGenerator& gen, TypeInference& types) {
             
             // Add newline at the end
             gen.emit_call("__console_log_newline");
-            result_type = DataType::UNDEFINED;
+            result_type = DataType::UNKNOWN;
             return;
         }
         
@@ -917,6 +917,101 @@ void MethodCall::generate_code(CodeGenerator& gen, TypeInference& types) {
             } else {
                 throw std::runtime_error("Unknown array method: " + method_name);
             }
+        } else if (object_type == DataType::ARRAY) {
+            // Handle simplified Array methods
+            if (method_name == "push") {
+                // Get the array variable offset
+                int64_t array_offset = types.get_variable_offset(object_name);
+                
+                // For each argument, call push
+                for (size_t i = 0; i < arguments.size(); i++) {
+                    // Load array pointer
+                    gen.emit_mov_reg_mem(7, array_offset); // RDI = array pointer
+                    
+                    // Generate argument value
+                    arguments[i]->generate_code(gen, types);
+                    
+                    // Move argument to RSI (second parameter)
+                    gen.emit_mov_reg_reg(6, 0); // RSI = value (from RAX)
+                    
+                    // Call simplified array push
+                    gen.emit_call("__simple_array_push");
+                }
+                result_type = DataType::VOID;
+            } else if (method_name == "pop") {
+                // Get the array variable offset
+                int64_t array_offset = types.get_variable_offset(object_name);
+                gen.emit_mov_reg_mem(7, array_offset); // RDI = array pointer
+                gen.emit_call("__simple_array_pop");
+                result_type = DataType::NUMBER;
+            } else if (method_name == "slice") {
+                // Get the array variable offset
+                int64_t array_offset = types.get_variable_offset(object_name);
+                gen.emit_mov_reg_mem(7, array_offset); // RDI = array pointer
+                
+                // Handle arguments: start, end, step (with defaults)
+                if (arguments.size() >= 1) {
+                    arguments[0]->generate_code(gen, types);
+                    gen.emit_mov_reg_reg(6, 0); // RSI = start
+                } else {
+                    gen.emit_mov_reg_imm(6, 0); // RSI = 0 (default start)
+                }
+                
+                if (arguments.size() >= 2) {
+                    arguments[1]->generate_code(gen, types);
+                    gen.emit_mov_reg_reg(2, 0); // RDX = end
+                } else {
+                    gen.emit_mov_reg_imm(2, -1); // RDX = -1 (default end)
+                }
+                
+                if (arguments.size() >= 3) {
+                    arguments[2]->generate_code(gen, types);
+                    gen.emit_mov_reg_reg(1, 0); // RCX = step
+                } else {
+                    gen.emit_mov_reg_imm(1, 1); // RCX = 1 (default step)
+                }
+                
+                gen.emit_call("__simple_array_slice");
+                result_type = DataType::ARRAY;
+            } else if (method_name == "slice_all") {
+                // Get the array variable offset
+                int64_t array_offset = types.get_variable_offset(object_name);
+                gen.emit_mov_reg_mem(7, array_offset); // RDI = array pointer
+                gen.emit_call("__simple_array_slice_all");
+                result_type = DataType::ARRAY;
+            } else if (method_name == "toString") {
+                // Get the array variable offset
+                int64_t array_offset = types.get_variable_offset(object_name);
+                gen.emit_mov_reg_mem(7, array_offset); // RDI = array pointer
+                gen.emit_call("__simple_array_tostring");
+                result_type = DataType::STRING;
+            } else if (method_name == "sum") {
+                // Get the array variable offset
+                int64_t array_offset = types.get_variable_offset(object_name);
+                gen.emit_mov_reg_mem(7, array_offset); // RDI = array pointer
+                gen.emit_call("__simple_array_sum");
+                result_type = DataType::NUMBER;
+            } else if (method_name == "mean") {
+                // Get the array variable offset
+                int64_t array_offset = types.get_variable_offset(object_name);
+                gen.emit_mov_reg_mem(7, array_offset); // RDI = array pointer
+                gen.emit_call("__simple_array_mean");
+                result_type = DataType::NUMBER;
+            } else if (method_name == "max") {
+                // Get the array variable offset
+                int64_t array_offset = types.get_variable_offset(object_name);
+                gen.emit_mov_reg_mem(7, array_offset); // RDI = array pointer
+                gen.emit_call("__simple_array_max");
+                result_type = DataType::NUMBER;
+            } else if (method_name == "min") {
+                // Get the array variable offset
+                int64_t array_offset = types.get_variable_offset(object_name);
+                gen.emit_mov_reg_mem(7, array_offset); // RDI = array pointer
+                gen.emit_call("__simple_array_min");
+                result_type = DataType::NUMBER;
+            } else {
+                throw std::runtime_error("Unknown Array method: " + method_name);
+            }
         } else if (object_type == DataType::REGEX) {
             // Handle regex methods like test, exec
             std::cout << "DEBUG: Entering REGEX case for method '" << method_name << "'" << std::endl;
@@ -994,6 +1089,86 @@ void MethodCall::generate_code(CodeGenerator& gen, TypeInference& types) {
             // If object_name is not a variable, it might be a static method call
             // Generate static method call: ClassName.methodName()
             std::cout << "DEBUG: Entering UNKNOWN case (static method) for object '" << object_name << "'" << std::endl;
+            
+            // Special handling for Array static methods
+            if (object_name == "Array") {
+                if (method_name == "zeros") {
+                    // Handle Array.zeros([shape]) 
+                    if (arguments.size() >= 1) {
+                        // Generate the shape array argument
+                        arguments[0]->generate_code(gen, types);
+                        // RAX now contains the shape array, extract first dimension
+                        gen.emit_mov_reg_reg(7, 0); // RDI = shape array
+                        gen.emit_call("__simple_array_get_first_dimension");
+                        gen.emit_mov_reg_reg(7, 0); // RDI = first dimension size
+                    } else {
+                        gen.emit_mov_reg_imm(7, 0); // RDI = 0 (empty array)
+                    }
+                    gen.emit_call("__simple_array_zeros");
+                    result_type = DataType::ARRAY;
+                    return;
+                } else if (method_name == "ones") {
+                    // Handle Array.ones([shape])
+                    if (arguments.size() >= 1) {
+                        // Generate the shape array argument
+                        arguments[0]->generate_code(gen, types);
+                        // RAX now contains the shape array, extract first dimension
+                        gen.emit_mov_reg_reg(7, 0); // RDI = shape array
+                        gen.emit_call("__simple_array_get_first_dimension");
+                        gen.emit_mov_reg_reg(7, 0); // RDI = first dimension size
+                    } else {
+                        gen.emit_mov_reg_imm(7, 0); // RDI = 0 (empty array)
+                    }
+                    gen.emit_call("__simple_array_ones");
+                    result_type = DataType::ARRAY;
+                    return;
+                } else if (method_name == "arange") {
+                    // Handle Array.arange(start, stop, step)
+                    if (arguments.size() >= 2) {
+                        arguments[0]->generate_code(gen, types);
+                        gen.emit_mov_mem_reg(-8, 0); // Save start
+                        arguments[1]->generate_code(gen, types);
+                        gen.emit_mov_mem_reg(-16, 0); // Save stop
+                        
+                        gen.emit_mov_reg_mem(7, -8); // RDI = start
+                        gen.emit_mov_reg_mem(6, -16); // RSI = stop
+                        
+                        if (arguments.size() >= 3) {
+                            arguments[2]->generate_code(gen, types);
+                            gen.emit_mov_reg_reg(2, 0); // RDX = step
+                        } else {
+                            gen.emit_mov_reg_imm(2, 1); // RDX = 1 (default step)
+                        }
+                        
+                        gen.emit_call("__simple_array_arange");
+                        result_type = DataType::ARRAY;
+                        return;
+                    }
+                } else if (method_name == "linspace") {
+                    // Handle Array.linspace(start, stop, num)
+                    if (arguments.size() >= 2) {
+                        arguments[0]->generate_code(gen, types);
+                        gen.emit_mov_mem_reg(-8, 0); // Save start
+                        arguments[1]->generate_code(gen, types);
+                        gen.emit_mov_mem_reg(-16, 0); // Save stop
+                        
+                        gen.emit_mov_reg_mem(7, -8); // RDI = start
+                        gen.emit_mov_reg_mem(6, -16); // RSI = stop
+                        
+                        if (arguments.size() >= 3) {
+                            arguments[2]->generate_code(gen, types);
+                            gen.emit_mov_reg_reg(2, 0); // RDX = num
+                        } else {
+                            gen.emit_mov_reg_imm(2, 50); // RDX = 50 (default)
+                        }
+                        
+                        gen.emit_call("__simple_array_linspace");
+                        result_type = DataType::ARRAY;
+                        return;
+                    }
+                }
+            }
+            
             std::string static_method_label = "__static_" + method_name;
             
             // Set up arguments for static method call (no 'this' parameter)
@@ -1526,26 +1701,38 @@ void ExpressionMethodCall::generate_code(CodeGenerator& gen, TypeInference& type
 }
 
 void ArrayLiteral::generate_code(CodeGenerator& gen, TypeInference& types) {
-    // Allocate temporary variable for array pointer
-    int64_t array_offset = types.allocate_variable("__temp_array_" + std::to_string(rand()), DataType::TENSOR);
+    // Create empty array
+    gen.emit_mov_reg_imm(7, 0);  // RDI = 0 (empty array)
+    gen.emit_call("__simple_array_zeros");  // Creates empty array
     
-    // Create array with initial capacity
-    gen.emit_mov_reg_imm(7, elements.size() > 0 ? elements.size() : 8); // RDI = initial capacity
-    gen.emit_call("__array_create");
-    gen.emit_mov_mem_reg(array_offset, 0); // Save array pointer on stack
+    // Save array pointer on stack
+    gen.emit_sub_reg_imm(4, 8);   // sub rsp, 8
+    X86CodeGen* x86_gen = dynamic_cast<X86CodeGen*>(&gen);
+    if (x86_gen) {
+        x86_gen->emit_mov_mem_rsp_reg(0, 0);   // mov [rsp], rax
+    }
     
     // Push each element into the array
     for (const auto& element : elements) {
         element->generate_code(gen, types);
-        // Call __array_push(array_ptr, value)
-        gen.emit_mov_reg_mem(7, array_offset); // RDI = array pointer from stack
         gen.emit_mov_reg_reg(6, 0); // RSI = value to push
-        gen.emit_call("__array_push");
+        
+        // Get array pointer from stack
+        if (x86_gen) {
+            x86_gen->emit_mov_reg_mem_rsp(7, 0);   // mov rdi, [rsp]
+        }
+        
+        // Call __simple_array_push(array_ptr, value)
+        gen.emit_call("__simple_array_push");
     }
     
     // Return the array pointer in RAX
-    gen.emit_mov_reg_mem(0, array_offset); // Load array pointer from stack
-    result_type = DataType::TENSOR;
+    if (x86_gen) {
+        x86_gen->emit_mov_reg_mem_rsp(0, 0);   // mov rax, [rsp]
+    }
+    gen.emit_add_reg_imm(4, 8);   // add rsp, 8
+    
+    result_type = DataType::ARRAY;
 }
 
 void ObjectLiteral::generate_code(CodeGenerator& gen, TypeInference& types) {
@@ -1700,20 +1887,56 @@ void ArrayAccess::generate_code(CodeGenerator& gen, TypeInference& types) {
             class_name = types.get_variable_class_name(var_expr->name);
             std::cout << "DEBUG: Variable " << var_expr->name << " is CLASS_INSTANCE of class: " << class_name << std::endl;
             
-            // Check if this class has operator[] overload
+            // Check if this class has operator[] or operator[:] overload
             auto* compiler = get_current_compiler();
-            std::cout << "DEBUG: Checking for operator[] overload in class: " << class_name << std::endl;
-            std::cout << "DEBUG: Looking for TokenType::LBRACKET which has value: " << static_cast<int>(TokenType::LBRACKET) << std::endl;
+            std::cout << "DEBUG: Checking for operator[] and operator[:] overloads in class: " << class_name << std::endl;
             if (compiler) {
-                bool has_overload = compiler->has_operator_overload(class_name, TokenType::LBRACKET);
-                std::cout << "DEBUG: Class " << class_name << " has operator[] overload: " << (has_overload ? "YES" : "NO") << std::endl;
-                if (has_overload) {
+                bool has_bracket_overload = compiler->has_operator_overload(class_name, TokenType::LBRACKET);
+                bool has_slice_overload = compiler->has_operator_overload(class_name, TokenType::SLICE_BRACKET);
+                std::cout << "DEBUG: Class " << class_name << " has operator[] overload: " << (has_bracket_overload ? "YES" : "NO") << std::endl;
+                std::cout << "DEBUG: Class " << class_name << " has operator[:] overload: " << (has_slice_overload ? "YES" : "NO") << std::endl;
+                
+                // Prefer slice operator for slice expressions, bracket operator otherwise
+                if (is_slice_expression && has_slice_overload) {
                     use_operator_overload = true;
-                    std::cout << "DEBUG: Using operator[] overload for class " << class_name << std::endl;
+                    std::cout << "DEBUG: Using operator[:] overload for slice expression" << std::endl;
+                } else if (!is_slice_expression && has_bracket_overload) {
+                    use_operator_overload = true;
+                    std::cout << "DEBUG: Using operator[] overload for index expression" << std::endl;
+                } else if (has_bracket_overload) {
+                    // Fallback to bracket operator if available
+                    use_operator_overload = true;
+                    std::cout << "DEBUG: Fallback to operator[] overload" << std::endl;
                 }
             } else {
                 std::cout << "DEBUG: No compiler instance available" << std::endl;
             }
+        } else if (var_type == DataType::ARRAY) {
+            // Handle simplified Array access directly
+            std::cout << "DEBUG: Variable " << var_expr->name << " is simplified Array type" << std::endl;
+            
+            // Get the array variable offset
+            int64_t array_offset = types.get_variable_offset(var_expr->name);
+            gen.emit_mov_reg_mem(7, array_offset); // RDI = array pointer
+            
+            // Generate code for the index
+            if (index) {
+                index->generate_code(gen, types);
+                gen.emit_mov_reg_reg(6, 0); // RSI = index
+            } else if (!slices.empty()) {
+                // For slice syntax, use slice function instead
+                slices[0]->generate_code(gen, types);
+                // TODO: Handle slice properly
+                gen.emit_mov_reg_reg(6, 0); // RSI = slice object
+            } else {
+                gen.emit_mov_reg_imm(6, 0); // RSI = 0 (default index)
+            }
+            
+            gen.emit_call("__simple_array_get");
+            result_type = DataType::NUMBER;
+            
+            std::cout << "DEBUG: Used simplified array access for " << var_expr->name << std::endl;
+            return;
         }
     }
     
@@ -1723,13 +1946,17 @@ void ArrayAccess::generate_code(CodeGenerator& gen, TypeInference& types) {
         if (is_slice_expression) {
             index_expr_str = slice_expression;
             std::cout << "DEBUG: Using slice expression: " << index_expr_str << std::endl;
-        } else {
+        } else if (index) {
             // Extract the expression string using the helper method
             index_expr_str = types.extract_expression_string(index.get());
             if (index_expr_str.empty()) {
                 index_expr_str = "complex_expression";
             }
             std::cout << "DEBUG: Extracted index expression: " << index_expr_str << std::endl;
+        } else {
+            // Handle case where we have slices but no index (new slice syntax)
+            index_expr_str = "slice_expression";
+            std::cout << "DEBUG: Using new slice syntax" << std::endl;
         }
         
         // Use enhanced type inference to determine the best operator overload
@@ -1746,9 +1973,16 @@ void ArrayAccess::generate_code(CodeGenerator& gen, TypeInference& types) {
             std::cout << "DEBUG: Generating string literal for slice: '" << slice_expression << "'" << std::endl;
             auto string_literal = std::make_unique<StringLiteral>(slice_expression);
             string_literal->generate_code(gen, types);
-        } else {
+        } else if (index) {
             // For normal expressions, evaluate them
             index->generate_code(gen, types);
+        } else if (!slices.empty()) {
+            // For new slice syntax, generate slice object code
+            std::cout << "DEBUG: Generating code for new slice syntax" << std::endl;
+            slices[0]->generate_code(gen, types);
+        } else {
+            // Fallback - generate a zero index
+            gen.emit_mov_reg_imm(0, 0);
         }
         gen.emit_mov_reg_reg(6, 0);  // Move string/index to RSI (second parameter)
         
@@ -1756,7 +1990,12 @@ void ArrayAccess::generate_code(CodeGenerator& gen, TypeInference& types) {
         auto* compiler = get_current_compiler();
         if (compiler) {
             std::vector<DataType> operand_types = {index_type};
-            const auto* best_overload = compiler->find_best_operator_overload(class_name, TokenType::LBRACKET, operand_types);
+            // Choose the appropriate operator token based on whether it's a slice expression
+            TokenType operator_token = (is_slice_expression && compiler->has_operator_overload(class_name, TokenType::SLICE_BRACKET)) 
+                                     ? TokenType::SLICE_BRACKET 
+                                     : TokenType::LBRACKET;
+            std::cout << "DEBUG: Using operator token: " << static_cast<int>(operator_token) << " for " << (is_slice_expression ? "slice" : "index") << " expression" << std::endl;
+            const auto* best_overload = compiler->find_best_operator_overload(class_name, operator_token, operand_types);
             
             if (best_overload) {
                 // Call the specific operator overload function
@@ -1771,7 +2010,7 @@ void ArrayAccess::generate_code(CodeGenerator& gen, TypeInference& types) {
                 
                 // Try ANY type overload as fallback
                 std::vector<DataType> any_operand_types = {DataType::ANY};
-                const auto* any_overload = compiler->find_best_operator_overload(class_name, TokenType::LBRACKET, any_operand_types);
+                const auto* any_overload = compiler->find_best_operator_overload(class_name, operator_token, any_operand_types);
                 
                 if (any_overload) {
                     std::cout << "DEBUG: Found ANY overload fallback: " << any_overload->function_name << std::endl;
@@ -1787,7 +2026,7 @@ void ArrayAccess::generate_code(CodeGenerator& gen, TypeInference& types) {
                         param_signature = "any"; // ANY type parameter
                     }
                     
-                    std::string op_function_name = class_name + "::__op_" + std::to_string(static_cast<int>(TokenType::LBRACKET)) + "_any_" + param_signature + "__";
+                    std::string op_function_name = class_name + "::__op_" + std::to_string(static_cast<int>(operator_token)) + "_any_" + param_signature + "__";
                     std::cout << "DEBUG: Last resort - calling operator overload directly: " << op_function_name << std::endl;
                     gen.emit_call(op_function_name);
                     result_type = DataType::CLASS_INSTANCE; // Assume operator overloads return class instances
@@ -1810,7 +2049,15 @@ void ArrayAccess::generate_code(CodeGenerator& gen, TypeInference& types) {
         }
         
         // Generate code for the index expression
-        index->generate_code(gen, types);
+        if (index) {
+            index->generate_code(gen, types);
+        } else if (!slices.empty()) {
+            // For new slice syntax, generate slice object code
+            slices[0]->generate_code(gen, types);
+        } else {
+            // Fallback - generate a zero index
+            gen.emit_mov_reg_imm(0, 0);
+        }
         gen.emit_mov_reg_reg(6, 0); // Move index to RSI
         
         // Pop object into RDI
@@ -1843,8 +2090,9 @@ void Assignment::generate_code(CodeGenerator& gen, TypeInference& types) {
             // Untyped variable - infer type from value for arrays and other structured types
             // For simple values, keep as UNKNOWN for JavaScript compatibility
             if (value->result_type == DataType::TENSOR || value->result_type == DataType::STRING || 
-                value->result_type == DataType::REGEX || value->result_type == DataType::FUNCTION) {
-                // Arrays, strings, regex, and functions should preserve their type for proper method dispatch
+                value->result_type == DataType::REGEX || value->result_type == DataType::FUNCTION ||
+                value->result_type == DataType::ARRAY) {
+                // Arrays, tensors, strings, regex, and functions should preserve their type for proper method dispatch
                 variable_type = value->result_type;
             } else {
                 // Other types keep as UNKNOWN/ANY for JavaScript compatibility
@@ -2475,6 +2723,19 @@ void ExpressionPropertyAccess::generate_code(CodeGenerator& gen, TypeInference& 
         } else {
             throw std::runtime_error("Unknown array property: " + property_name);
         }
+    } else if (object_type == DataType::ARRAY) {
+        // Handle simplified Array properties
+        if (property_name == "length") {
+            gen.emit_mov_reg_reg(7, 0);  // RDI = array pointer
+            gen.emit_call("__simple_array_length");
+            result_type = DataType::NUMBER;
+        } else if (property_name == "shape") {
+            gen.emit_mov_reg_reg(7, 0);  // RDI = array pointer
+            gen.emit_call("__simple_array_shape");
+            result_type = DataType::ARRAY;
+        } else {
+            throw std::runtime_error("Unknown Array property: " + property_name);
+        }
     } else if (object_type == DataType::REGEX) {
         // Handle regex properties
         if (property_name == "source") {
@@ -3049,6 +3310,33 @@ void OperatorOverloadDecl::generate_code(CodeGenerator& gen, TypeInference& type
     gen.emit_label(op_function_name);
     gen.emit_prologue();
     
+    // Reset type inference for new function
+    types.reset_for_function();
+    
+    // Set up parameter types and save parameters from registers to stack
+    for (size_t i = 0; i < parameters.size() && i < 6; i++) {
+        const auto& param = parameters[i];
+        types.set_variable_type(param.name, param.type);
+        
+        int stack_offset = -(int)(i + 1) * 8;
+        types.set_variable_offset(param.name, stack_offset);
+        
+        // Save parameters from calling convention registers to stack
+        switch (i) {
+            case 0: gen.emit_mov_mem_reg(stack_offset, 7); break;  // save RDI
+            case 1: gen.emit_mov_mem_reg(stack_offset, 6); break;  // save RSI
+            case 2: gen.emit_mov_mem_reg(stack_offset, 2); break;  // save RDX
+            case 3: gen.emit_mov_mem_reg(stack_offset, 1); break;  // save RCX
+            case 4: gen.emit_mov_mem_reg(stack_offset, 8); break;  // save R8
+            case 5: gen.emit_mov_mem_reg(stack_offset, 9); break;  // save R9
+        }
+        
+        // Special handling for class instances - set class name
+        if (param.type == DataType::CLASS_INSTANCE && !param.class_name.empty()) {
+            types.set_variable_class_type(param.name, param.class_name);
+        }
+    }
+    
     // Generate function body
     for (const auto& stmt : body) {
         stmt->generate_code(gen, types);
@@ -3073,6 +3361,25 @@ void OperatorOverloadDecl::generate_code(CodeGenerator& gen, TypeInference& type
         std::cout << "DEBUG: After registration, class " << class_name << " has operator type " 
                   << static_cast<int>(operator_type) << " overload: " << (has_overload ? "YES" : "NO") << std::endl;
     }
+}
+
+void SliceExpression::generate_code(CodeGenerator& gen, TypeInference& types) {
+    // Create a runtime slice object that can be used by array operations
+    // The slice object should contain start, end, step, and specification flags
+    
+    // Load slice parameters into registers
+    gen.emit_mov_reg_imm(7, start_specified ? start : 0);                    // RDI = start
+    gen.emit_mov_reg_imm(6, end_specified ? end : -1);                       // RSI = end  
+    gen.emit_mov_reg_imm(2, step_specified ? step : 1);                      // RDX = step
+    gen.emit_mov_reg_imm(1, (start_specified ? 1 : 0) | 
+                            (end_specified ? 2 : 0) | 
+                            (step_specified ? 4 : 0));                       // RCX = flags
+    
+    // Call runtime function to create slice object
+    gen.emit_call("__slice_create");
+    
+    // Result (slice pointer) is now in RAX
+    result_type = DataType::SLICE;
 }
 
 }

@@ -4,6 +4,7 @@ class Point {
 
     // typed version for numeric access - super performant
     operator [] (a: Point, b: int64) {
+        console.log("Int here")
         return new Point{ x: a.x * b, y: a.y * b }
     }
 
@@ -30,7 +31,8 @@ function test() {
     // Test numeric literal priority ordering
     var result1 = p[0];     // Should use int64 operator[]
     var result2 = p[5.5];   // Should use float64 operator[]
-    p[anything goes here]
+    p[anything goes heredd]
+    p[0:,:,:]
     
     console.log("Test completed successfully");
 }
